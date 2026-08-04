@@ -21,3 +21,27 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+
+  - type: cron
+    name: price-checker-v2-cron
+    runtime: python
+    schedule: "30 23 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python cron_entry.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: NAVER_COMMERCE_CLIENT_ID
+        sync: false
+      - key: NAVER_COMMERCE_CLIENT_SECRET
+        sync: false
+      - key: NAVER_TOKEN_TYPE
+        value: SELF
+      - key: NAVER_USE_DISCOUNTED_PRICE
+        value: "true"
+      - key: DATABASE_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
