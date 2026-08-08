@@ -1,0 +1,109 @@
+import unittest
+
+import core.naver_client as naver_client
+from core.naver_client import (
+    CommerceProduct,
+    flatten_products,
+    format_product_price,
+    generate_client_secret_sign,
+    match_product,
+)
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None, text=''):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.text = text
+        self.ok = 200 <= status_code < 300
+
+    def json(self):
+        return self._payload
+
+
+class FakeRelaySession:
+    def __init__(self, response):
+        self.response = response
+        self.last_url = None
+        self.last_headers = None
+
+    def get(self, url, headers=None, timeout=None):
+        self.last_url = url
+        self.last_headers = headers or {}
+        return self.response
+
+
+class NaverClientTests(unittest.TestCase):
+    @unittest.skipIf(naver_client.bcrypt is None, 'bcrypt not installed in test environment')
+    def test_official_signature_example(self):
+        actual = generate_client_secret_sign(
+            'aaaabbbbcccc',
+            '$2a$10$abcdefghijklmnopqrstuv',
+            1643961623299,
+        )
+        self.assertEqual(
+            actual,
+            'JDJhJDEwJGFiY2RlZmdoaWprbG1ub3BxcnN0dXVCVldZSk42T0VPdEx1OFY0cDQxa2IuTnpVaUEzbmsy',
+        )
+
+    def test_flatten_and_discounted_price(self):
+        data = {
+            'contents': [{
+                'originProductNo': 11,
+                'channelProducts': [{
+                    'channelServiceType': 'STOREFARM',
+                    'channelProductNo': 22,
+                    'name': '고수 1단',
+                    'salePrice': 5000,
+                    'discountedPrice': 4500,
+                    'statusType': 'SALE',
+                }],
+            }]
+        }
+        products = flatten_products(data)
+        self.assertEqual(len(products), 1)
+        self.assertEqual(format_product_price(products[0]), '4,500')
+
+    def test_id_match_has_priority(self):
+        products = [
+            CommerceProduct('고수 1단', '100', '10', '', 5000, None, 'SALE'),
+            CommerceProduct('고수 1단 특품', '200', '20', '', 6000, None, 'SALE'),
+        ]
+        self.assertEqual(match_product(products, '고수 1단', '200').channel_product_no, '200')
+
+    def test_wrong_weight_is_rejected(self):
+        products = [
+            CommerceProduct('딜 500g', '1', '11', '', 5000, None, 'SALE'),
+            CommerceProduct('딜 1kg', '2', '22', '', 9000, None, 'SALE'),
+        ]
+        self.assertEqual(match_product(products, '딜 1kg').channel_product_no, '2')
+
+    def test_relay_mode_loads_products_without_naver_credentials(self):
+        response = FakeResponse(payload={
+            'products': [{
+                'name': '고수 1단',
+                'channel_product_no': '100',
+                'origin_product_no': '10',
+                'seller_management_code': '',
+                'sale_price': 5000,
+                'discounted_price': 4500,
+                'status_type': 'SALE',
+            }]
+        })
+        session = FakeRelaySession(response)
+        client = naver_client.NaverCommerceClient(
+            client_id='',
+            client_secret='',
+            relay_url='https://relay.example.com/',
+            relay_key='secret-key',
+            session=session,
+        )
+        products = client.list_products()
+        self.assertEqual(len(products), 1)
+        self.assertEqual(products[0].channel_product_no, '100')
+        self.assertEqual(session.last_url, 'https://relay.example.com/v1/products')
+        self.assertEqual(session.last_headers.get('X-Relay-Key'), 'secret-key')
+
+
+if __name__ == '__main__':
+    unittest.main()

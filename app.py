@@ -2,7 +2,12 @@ import streamlit as st
 
 from core.auth import ensure_login
 from core.bootstrap import initialize_app
-from core.config import NAVER_COMMERCE_CLIENT_ID, NAVER_COMMERCE_CLIENT_SECRET
+from core.config import (
+    NAVER_COMMERCE_CLIENT_ID,
+    NAVER_COMMERCE_CLIENT_SECRET,
+    NAVER_RELAY_KEY,
+    NAVER_RELAY_URL,
+)
 from core.db import get_session
 from core.repository import build_run_side_summary, get_latest_run
 from core.runner import run_price_check
@@ -37,12 +42,18 @@ st.markdown(
 )
 
 st.title('채소팜 가격비교 관리자')
-st.caption('네이버 커머스 API에서 채소팜 상품 가격만 조회하며 경쟁사 가격은 공백으로 표시합니다.')
+st.caption('네이버 커머스 API에서 채소팜 상품 가격만 조회하며 경쟁사 가격은 공백으로 표시합니다. 고정 IP 중계 서버가 설정되면 Render는 네이버 API를 직접 호출하지 않습니다.')
 
-if not NAVER_COMMERCE_CLIENT_ID or not NAVER_COMMERCE_CLIENT_SECRET:
-    st.warning('네이버 커머스 API 환경변수가 아직 없습니다. README의 설정 방법을 따라 입력해 주세요.')
+relay_ready = bool(NAVER_RELAY_URL and NAVER_RELAY_KEY)
+direct_ready = bool(NAVER_COMMERCE_CLIENT_ID and NAVER_COMMERCE_CLIENT_SECRET)
+naver_ready = relay_ready or direct_ready
 
-if st.button('지금 실행', type='primary', disabled=not (NAVER_COMMERCE_CLIENT_ID and NAVER_COMMERCE_CLIENT_SECRET)):
+if relay_ready:
+    st.info('고정 IP 중계 서버 모드로 연결됩니다.')
+elif not direct_ready:
+    st.warning('NAVER_RELAY_URL/NAVER_RELAY_KEY 또는 네이버 커머스 API ID/Secret을 설정해 주세요.')
+
+if st.button('지금 실행', type='primary', disabled=not naver_ready):
     with st.spinner('채소팜 상품 가격 조회 중...'):
         try:
             result = run_price_check(trigger_type='manual')

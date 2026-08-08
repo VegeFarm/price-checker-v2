@@ -15,6 +15,12 @@ services:
         value: SELF
       - key: NAVER_USE_DISCOUNTED_PRICE
         value: "true"
+      - key: NAVER_RELAY_URL
+        sync: false
+      - key: NAVER_RELAY_KEY
+        sync: false
+      - key: NAVER_RELAY_TIMEOUT
+        value: "90"
       - key: DATABASE_URL
         sync: false
       - key: TELEGRAM_BOT_TOKEN
@@ -39,6 +45,12 @@ services:
         value: SELF
       - key: NAVER_USE_DISCOUNTED_PRICE
         value: "true"
+      - key: NAVER_RELAY_URL
+        sync: false
+      - key: NAVER_RELAY_KEY
+        sync: false
+      - key: NAVER_RELAY_TIMEOUT
+        value: "90"
       - key: DATABASE_URL
         sync: false
       - key: TELEGRAM_BOT_TOKEN
