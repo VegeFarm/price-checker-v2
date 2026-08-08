@@ -1,0 +1,59 @@
+services:
+  - type: web
+    name: price-checker-v2-web
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: NAVER_COMMERCE_CLIENT_ID
+        sync: false
+      - key: NAVER_COMMERCE_CLIENT_SECRET
+        sync: false
+      - key: NAVER_TOKEN_TYPE
+        value: SELF
+      - key: NAVER_USE_DISCOUNTED_PRICE
+        value: "true"
+      - key: NAVER_RELAY_URL
+        sync: false
+      - key: NAVER_RELAY_KEY
+        sync: false
+      - key: NAVER_RELAY_TIMEOUT
+        value: "90"
+      - key: DATABASE_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+
+  - type: cron
+    name: price-checker-v2-cron
+    runtime: python
+    schedule: "30 23 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python cron_entry.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: NAVER_COMMERCE_CLIENT_ID
+        sync: false
+      - key: NAVER_COMMERCE_CLIENT_SECRET
+        sync: false
+      - key: NAVER_TOKEN_TYPE
+        value: SELF
+      - key: NAVER_USE_DISCOUNTED_PRICE
+        value: "true"
+      - key: NAVER_RELAY_URL
+        sync: false
+      - key: NAVER_RELAY_KEY
+        sync: false
+      - key: NAVER_RELAY_TIMEOUT
+        value: "90"
+      - key: DATABASE_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
