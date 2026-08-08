@@ -57,6 +57,17 @@ class PriceRule(Base):
     value: Mapped[float] = mapped_column(Float, nullable=False)
 
 
+class CompetitorProductRule(Base):
+    __tablename__ = 'competitor_product_rule'
+    __table_args__ = (UniqueConstraint('item_id', 'mall_id', name='uq_competitor_product_rule'),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey('item_master.id'), nullable=False)
+    mall_id: Mapped[int] = mapped_column(ForeignKey('mall_master.id'), nullable=False)
+    product_url: Mapped[str] = mapped_column(String(1000), nullable=False, default='')
+    search_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
 class RunHistory(Base):
     __tablename__ = 'run_history'
 

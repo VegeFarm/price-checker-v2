@@ -4,7 +4,7 @@ from collections import defaultdict
 import pandas as pd
 from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
-from core.models import Mall, Item, SearchKeywordRule, TargetProductIdRule, PriceRule, RunHistory, RunPriceResult
+from core.models import Mall, Item, SearchKeywordRule, TargetProductIdRule, PriceRule, CompetitorProductRule, RunHistory, RunPriceResult
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -53,6 +53,7 @@ def sync_items_to_search_rules(session: Session, item_names: list[str]) -> None:
             session.execute(delete(SearchKeywordRule).where(SearchKeywordRule.item_id == item.id))
             session.execute(delete(TargetProductIdRule).where(TargetProductIdRule.item_id == item.id))
             session.execute(delete(PriceRule).where(PriceRule.item_id == item.id))
+            session.execute(delete(CompetitorProductRule).where(CompetitorProductRule.item_id == item.id))
             session.delete(item)
     session.commit()
     session.expire_all()
@@ -223,6 +224,105 @@ def save_mall_settings_df(session: Session, df: pd.DataFrame) -> None:
             mall.sort_order = int(row.get('정렬순서', mall.sort_order) or 0)
     session.commit()
 
+
+
+def _competitor_url_columns(malls: list[Mall]) -> dict[str, str]:
+    """mall_name -> 화면에 표시할 URL 열 이름."""
+    display_counts: dict[str, int] = {}
+    for mall in malls:
+        display_counts[mall.mall_display_name] = display_counts.get(mall.mall_display_name, 0) + 1
+
+    columns: dict[str, str] = {}
+    for mall in malls:
+        if display_counts.get(mall.mall_display_name, 0) > 1:
+            columns[mall.mall_name] = f'{mall.mall_display_name} ({mall.mall_name}) URL'
+        else:
+            columns[mall.mall_name] = f'{mall.mall_display_name} URL'
+    return columns
+
+
+def get_competitor_product_df(session: Session) -> pd.DataFrame:
+    """상품별 경쟁사 검색 여부와 경쟁사 URL을 한 행에 표시합니다.
+
+    검색여부는 상품 단위 하나의 체크박스이며, 체크하면 해당 상품의 모든 경쟁사 URL을
+    검색합니다. Item/Mall 마스터를 기준으로 동적으로 만들기 때문에 새 상품이 추가되면
+    자동으로 새 행이 생기며 기본값은 검색=True입니다.
+    """
+    from core.defaults import OWN_MALL_NAME
+
+    items = get_items(session)
+    malls = [m for m in get_malls(session) if m.mall_name != OWN_MALL_NAME]
+    rules = {(r.item_id, r.mall_id): r for r in session.scalars(select(CompetitorProductRule)).all()}
+    url_columns = _competitor_url_columns(malls)
+
+    rows = []
+    for item in items:
+        item_rules = [rules.get((item.id, mall.id)) for mall in malls]
+        enabled = all(True if rule is None else bool(rule.search_enabled) for rule in item_rules)
+        row = {
+            '상품명': item.display_name,
+            '검색여부': enabled,
+        }
+        for mall in malls:
+            rule = rules.get((item.id, mall.id))
+            row[url_columns[mall.mall_name]] = '' if rule is None else str(rule.product_url or '')
+        rows.append(row)
+
+    columns = ['상품명', '검색여부', *[url_columns[m.mall_name] for m in malls]]
+    return pd.DataFrame(rows, columns=columns)
+
+
+def save_competitor_product_df(session: Session, df: pd.DataFrame) -> None:
+    """상품 단위 체크값을 해당 상품의 모든 경쟁사 규칙에 동일하게 저장합니다."""
+    from core.defaults import OWN_MALL_NAME
+
+    item_by_name = {i.display_name: i for i in get_items(session)}
+    malls = [m for m in get_malls(session) if m.mall_name != OWN_MALL_NAME]
+    url_columns = _competitor_url_columns(malls)
+
+    session.execute(delete(CompetitorProductRule))
+    session.commit()
+
+    for _, row in df.iterrows():
+        item_name = str(row.get('상품명', '')).strip()
+        if item_name not in item_by_name:
+            continue
+
+        raw_enabled = row.get('검색여부', True)
+        enabled = bool(raw_enabled) if not pd.isna(raw_enabled) else True
+        item = item_by_name[item_name]
+
+        for mall in malls:
+            raw_url = row.get(url_columns[mall.mall_name], '')
+            product_url = '' if pd.isna(raw_url) else str(raw_url).strip()
+            session.add(CompetitorProductRule(
+                item_id=item.id,
+                mall_id=mall.id,
+                product_url=product_url,
+                search_enabled=enabled,
+            ))
+    session.commit()
+
+
+def load_competitor_product_config(session: Session) -> dict[tuple[str, str], dict]:
+    """(상품명, 경쟁사명) -> {enabled, url}.
+
+    저장된 행이 없으면 기본 검색여부는 True, URL은 빈칸으로 취급합니다.
+    """
+    from core.defaults import OWN_MALL_NAME
+
+    items = get_items(session, enabled_only=True)
+    malls = [m for m in get_malls(session, enabled_only=True) if m.mall_name != OWN_MALL_NAME]
+    rules = {(r.item_id, r.mall_id): r for r in session.scalars(select(CompetitorProductRule)).all()}
+    config: dict[tuple[str, str], dict] = {}
+    for item in items:
+        for mall in malls:
+            rule = rules.get((item.id, mall.id))
+            config[(item.display_name, mall.mall_name)] = {
+                'enabled': True if rule is None else bool(rule.search_enabled),
+                'url': '' if rule is None else str(rule.product_url or '').strip(),
+            }
+    return config
 
 def load_runtime_config(session: Session):
     malls = get_malls(session, enabled_only=True)

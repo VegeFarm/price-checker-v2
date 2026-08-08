@@ -42,7 +42,7 @@ st.markdown(
 )
 
 st.title('채소팜 가격비교 관리자')
-st.caption('네이버 커머스 API에서 채소팜 상품 가격만 조회하며 경쟁사 가격은 공백으로 표시합니다. 고정 IP 중계 서버가 설정되면 Render는 네이버 API를 직접 호출하지 않습니다.')
+st.caption('채소팜 가격은 네이버 커머스 API로, 경쟁사 가격은 등록된 네이버 상품 URL을 낮은 빈도로 직접 확인합니다. 고정 IP 중계 서버가 설정되면 Render는 채소팜 API를 직접 호출하지 않습니다.')
 
 relay_ready = bool(RELAY_BASE_URL and RELAY_SHARED_TOKEN)
 direct_ready = bool(NAVER_COMMERCE_CLIENT_ID and NAVER_COMMERCE_CLIENT_SECRET)
@@ -54,10 +54,15 @@ elif not direct_ready:
     st.warning('RELAY_BASE_URL/RELAY_SHARED_TOKEN 또는 네이버 커머스 API ID/Secret을 설정해 주세요.')
 
 if st.button('지금 실행', type='primary', disabled=not naver_ready):
-    with st.spinner('채소팜 상품 가격 조회 중...'):
+    with st.spinner('채소팜 및 선택한 경쟁사 상품 가격 조회 중...'):
         try:
             result = run_price_check(trigger_type='manual')
-            st.success(f"네이버 상품 {result['product_count']:,}개를 확인했습니다.")
+            st.success(
+                f"채소팜 API 상품 {result['product_count']:,}개를 확인했고, "
+                f"경쟁사 URL {result.get('competitor_request_count', 0):,}개를 조회했습니다."
+            )
+            if result.get('competitor_errors'):
+                st.warning(f"경쟁사 가격 조회 실패 {len(result['competitor_errors']):,}건은 빈칸으로 처리했습니다.")
             st.rerun()
         except Exception as exc:
             st.error(f'실행 중 오류: {exc}')

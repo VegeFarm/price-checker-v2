@@ -27,7 +27,7 @@ def render_large_gap_summary(large_gap_items: list[dict]) -> None:
                 f"  - {item['status_text']}"
             )
     else:
-        st.caption('경쟁사 가격은 현재 수집하지 않아 비교 결과가 없습니다.')
+        st.caption('가격 차이가 큰 품목이 없거나 수집된 경쟁사 가격이 아직 없습니다.')
 
 
 def _price_to_int(price_text: str) -> int | None:
