@@ -22,9 +22,9 @@ from core.config import (
     NAVER_COMMERCE_CLIENT_SECRET,
     NAVER_TOKEN_TYPE,
     NAVER_USE_DISCOUNTED_PRICE,
-    NAVER_RELAY_URL,
-    NAVER_RELAY_KEY,
-    NAVER_RELAY_TIMEOUT,
+    RELAY_BASE_URL,
+    RELAY_SHARED_TOKEN,
+    RELAY_TIMEOUT,
 )
 
 BASE_URL = 'https://api.commerce.naver.com/external'
@@ -117,8 +117,8 @@ class NaverCommerceClient:
         token_type: str = NAVER_TOKEN_TYPE,
         account_id: str = NAVER_ACCOUNT_ID,
         session: requests.Session | None = None,
-        relay_url: str = NAVER_RELAY_URL,
-        relay_key: str = NAVER_RELAY_KEY,
+        relay_url: str = RELAY_BASE_URL,
+        relay_key: str = RELAY_SHARED_TOKEN,
         use_relay: bool | None = None,
     ) -> None:
         self.relay_url = str(relay_url or '').strip().rstrip('/')
@@ -127,9 +127,9 @@ class NaverCommerceClient:
 
         if self.use_relay:
             if not self.relay_url:
-                raise MissingNaverCredentialsError('NAVER_RELAY_URL 환경변수를 먼저 넣어주세요.')
+                raise MissingNaverCredentialsError('RELAY_BASE_URL 환경변수를 먼저 넣어주세요.')
             if not self.relay_key:
-                raise MissingNaverCredentialsError('NAVER_RELAY_KEY 환경변수를 먼저 넣어주세요.')
+                raise MissingNaverCredentialsError('RELAY_SHARED_TOKEN 환경변수를 먼저 넣어주세요.')
         elif not client_id or not client_secret:
             raise MissingNaverCredentialsError(
                 'NAVER_COMMERCE_CLIENT_ID / NAVER_COMMERCE_CLIENT_SECRET 환경변수를 먼저 넣어주세요.'
@@ -212,56 +212,73 @@ class NaverCommerceClient:
             return response.json()
         raise NaverCommerceAPIError('네이버 인증 토큰 갱신 후에도 요청이 거부되었습니다.', status_code=401)
 
-    def _list_products_via_relay(self) -> list[CommerceProduct]:
-        url = f'{self.relay_url}/v1/products'
+    def _search_products_via_relay(self, page: int, size: int) -> dict[str, Any]:
+        """기존 재고자동화 중계서버 규격으로 네이버 상품검색을 호출합니다."""
+        url = f'{self.relay_url}/naver/products/search'
+        payload = {'body': {'page': page, 'size': size, 'orderType': 'NO'}}
         try:
-            response = self.session.get(
+            response = self.session.post(
                 url,
-                headers={'X-Relay-Key': self.relay_key},
-                timeout=NAVER_RELAY_TIMEOUT,
+                headers={
+                    'Authorization': f'Bearer {self.relay_key}',
+                    'Content-Type': 'application/json',
+                },
+                json=payload,
+                timeout=RELAY_TIMEOUT,
             )
         except requests.RequestException as exc:
-            raise NaverCommerceAPIError(f'고정 IP 중계 서버 연결 실패: {exc}') from exc
-
-        if not response.ok:
-            try:
-                body = response.json()
-                detail = body.get('detail') or body.get('message') or response.text
-            except ValueError:
-                detail = response.text
-            raise NaverCommerceAPIError(
-                f'고정 IP 중계 서버 오류: {str(detail).strip() or response.status_code}',
-                status_code=response.status_code,
-                code='RELAY_ERROR',
-            )
+            raise NaverCommerceAPIError(f'기존 중계서버 연결 실패: {exc}') from exc
 
         try:
             body = response.json()
         except ValueError as exc:
-            raise NaverCommerceAPIError('고정 IP 중계 서버 응답이 JSON 형식이 아닙니다.') from exc
+            raise NaverCommerceAPIError('기존 중계서버 응답이 JSON 형식이 아닙니다.') from exc
 
-        raw_products = body.get('products') if isinstance(body, dict) else None
-        if not isinstance(raw_products, list):
-            raise NaverCommerceAPIError('고정 IP 중계 서버 응답에 products 목록이 없습니다.')
+        if not response.ok:
+            detail = body.get('detail') or body.get('message') or body.get('text') or response.text
+            raise NaverCommerceAPIError(
+                f'기존 중계서버 오류: {str(detail).strip() or response.status_code}',
+                status_code=response.status_code,
+                code='RELAY_ERROR',
+            )
+        if not isinstance(body, dict):
+            raise NaverCommerceAPIError('기존 중계서버 응답 형식이 올바르지 않습니다.')
+        if body.get('ok') is False:
+            detail = body.get('text') or body.get('data') or body
+            raise NaverCommerceAPIError(
+                f'기존 중계서버 처리 실패: {detail}',
+                status_code=_safe_int(body.get('status_code')),
+                code='RELAY_ERROR',
+            )
+        data = body.get('data')
+        if not isinstance(data, dict):
+            raise NaverCommerceAPIError('기존 중계서버 응답에 data가 없습니다.')
+        return data
 
+    def _list_products_via_relay(self, page_size: int = 500, max_pages: int = 200) -> list[CommerceProduct]:
         products: list[CommerceProduct] = []
-        for item in raw_products:
-            if not isinstance(item, dict):
-                continue
-            products.append(CommerceProduct(
-                name=str(item.get('name', '') or '').strip(),
-                channel_product_no=str(item.get('channel_product_no', '') or ''),
-                origin_product_no=str(item.get('origin_product_no', '') or ''),
-                seller_management_code=str(item.get('seller_management_code', '') or '').strip(),
-                sale_price=_safe_int(item.get('sale_price')),
-                discounted_price=_safe_int(item.get('discounted_price')),
-                status_type=str(item.get('status_type', '') or '').strip(),
-            ))
+        page = 1
+        size = min(max(page_size, 1), 500)
+        while page <= max_pages:
+            data = self._search_products_via_relay(page, size)
+            products.extend(flatten_products(data))
+
+            total_pages = _safe_int(data.get('totalPages'))
+            is_last = bool(data.get('last', False))
+            if is_last or (total_pages is not None and page >= total_pages):
+                break
+            raw_contents = data.get('contents') or data.get('content') or []
+            if not raw_contents or len(raw_contents) < size:
+                break
+            page += 1
+
+        if page > max_pages:
+            raise NaverCommerceAPIError(f'상품 페이지가 {max_pages}페이지를 초과하여 조회를 중단했습니다.')
         return products
 
     def list_products(self, page_size: int = 500, max_pages: int = 200) -> list[CommerceProduct]:
         if self.use_relay:
-            return self._list_products_via_relay()
+            return self._list_products_via_relay(page_size=page_size, max_pages=max_pages)
 
         products: list[CommerceProduct] = []
         page = 1

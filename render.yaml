@@ -7,19 +7,11 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
-      - key: NAVER_COMMERCE_CLIENT_ID
+      - key: RELAY_BASE_URL
+        value: https://relay.chaesostock.com
+      - key: RELAY_SHARED_TOKEN
         sync: false
-      - key: NAVER_COMMERCE_CLIENT_SECRET
-        sync: false
-      - key: NAVER_TOKEN_TYPE
-        value: SELF
-      - key: NAVER_USE_DISCOUNTED_PRICE
-        value: "true"
-      - key: NAVER_RELAY_URL
-        sync: false
-      - key: NAVER_RELAY_KEY
-        sync: false
-      - key: NAVER_RELAY_TIMEOUT
+      - key: RELAY_TIMEOUT
         value: "90"
       - key: DATABASE_URL
         sync: false
@@ -37,19 +29,11 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
-      - key: NAVER_COMMERCE_CLIENT_ID
+      - key: RELAY_BASE_URL
+        value: https://relay.chaesostock.com
+      - key: RELAY_SHARED_TOKEN
         sync: false
-      - key: NAVER_COMMERCE_CLIENT_SECRET
-        sync: false
-      - key: NAVER_TOKEN_TYPE
-        value: SELF
-      - key: NAVER_USE_DISCOUNTED_PRICE
-        value: "true"
-      - key: NAVER_RELAY_URL
-        sync: false
-      - key: NAVER_RELAY_KEY
-        sync: false
-      - key: NAVER_RELAY_TIMEOUT
+      - key: RELAY_TIMEOUT
         value: "90"
       - key: DATABASE_URL
         sync: false

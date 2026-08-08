@@ -192,3 +192,28 @@ NAVER_RELAY_KEY=중계서버의_RELAY_SHARED_KEY와_동일한값
 ```
 
 `NAVER_RELAY_URL`이 설정되어 있으면 Render는 네이버 API를 직접 호출하지 않습니다. 따라서 네이버에 보이는 호출 IP는 중계 서버의 공인 IP입니다.
+
+## 기존 재고자동화 중계서버 공용 사용
+
+이 버전은 별도 V2 중계서버를 만들지 않고 기존 재고자동화 중계서버를 그대로 같이 사용합니다.
+
+```text
+price-checker-v2 (Render)
+  -> https://relay.chaesostock.com
+  -> 기존 맥미니 중계서버
+  -> Naver Commerce API
+```
+
+Render Web과 Cron에 필요한 중계 관련 값은 아래 3개입니다. `render.yaml`에는 URL과 timeout이 이미 들어 있으므로 실제로 새로 입력할 것은 기존 토큰 하나입니다.
+
+```env
+RELAY_BASE_URL=https://relay.chaesostock.com
+RELAY_SHARED_TOKEN=<기존 재고자동화 Render와 동일한 값>
+RELAY_TIMEOUT=90
+```
+
+V2는 기존 중계서버와 동일하게 `POST /naver/products/search`를 호출하고 `Authorization: Bearer <RELAY_SHARED_TOKEN>`으로 인증합니다.
+
+`RELAY_SHARED_TOKEN`은 GitHub에 올리지 말고 Render Environment에만 저장하세요.
+
+이 모드에서는 Render에 `NAVER_COMMERCE_CLIENT_ID` / `NAVER_COMMERCE_CLIENT_SECRET`을 넣을 필요가 없습니다. 네이버 인증과 실제 API 호출은 기존 중계서버가 담당합니다.

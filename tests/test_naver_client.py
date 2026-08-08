@@ -26,10 +26,12 @@ class FakeRelaySession:
         self.response = response
         self.last_url = None
         self.last_headers = None
+        self.last_json = None
 
-    def get(self, url, headers=None, timeout=None):
+    def post(self, url, headers=None, json=None, timeout=None):
         self.last_url = url
         self.last_headers = headers or {}
+        self.last_json = json
         return self.response
 
 
@@ -80,29 +82,36 @@ class NaverClientTests(unittest.TestCase):
 
     def test_relay_mode_loads_products_without_naver_credentials(self):
         response = FakeResponse(payload={
-            'products': [{
-                'name': '고수 1단',
-                'channel_product_no': '100',
-                'origin_product_no': '10',
-                'seller_management_code': '',
-                'sale_price': 5000,
-                'discounted_price': 4500,
-                'status_type': 'SALE',
-            }]
+            'ok': True,
+            'data': {
+                'last': True,
+                'contents': [{
+                    'originProductNo': 10,
+                    'channelProducts': [{
+                        'channelServiceType': 'STOREFARM',
+                        'channelProductNo': 100,
+                        'name': '고수 1단',
+                        'salePrice': 5000,
+                        'discountedPrice': 4500,
+                        'statusType': 'SALE',
+                    }],
+                }],
+            },
         })
         session = FakeRelaySession(response)
         client = naver_client.NaverCommerceClient(
             client_id='',
             client_secret='',
-            relay_url='https://relay.example.com/',
-            relay_key='secret-key',
+            relay_url='https://relay.chaesostock.com/',
+            relay_key='secret-token',
             session=session,
         )
         products = client.list_products()
         self.assertEqual(len(products), 1)
         self.assertEqual(products[0].channel_product_no, '100')
-        self.assertEqual(session.last_url, 'https://relay.example.com/v1/products')
-        self.assertEqual(session.last_headers.get('X-Relay-Key'), 'secret-key')
+        self.assertEqual(session.last_url, 'https://relay.chaesostock.com/naver/products/search')
+        self.assertEqual(session.last_headers.get('Authorization'), 'Bearer secret-token')
+        self.assertEqual(session.last_json['body']['page'], 1)
 
 
 if __name__ == '__main__':
