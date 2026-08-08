@@ -63,7 +63,11 @@ if st.button('지금 실행', type='primary', disabled=not naver_ready):
             )
             if result.get('competitor_errors'):
                 st.warning(f"경쟁사 가격 조회 실패 {len(result['competitor_errors']):,}건은 빈칸으로 처리했습니다.")
-            st.rerun()
+                with st.expander('경쟁사 조회 실패 상세 보기', expanded=True):
+                    for err in result['competitor_errors']:
+                        st.write(f"{err['item_name']} / {err['mall_name']} : {err['error']}")
+            elif result.get('competitor_request_count', 0):
+                st.success('등록된 경쟁사 URL에서 가격을 정상적으로 읽었습니다.')
         except Exception as exc:
             st.error(f'실행 중 오류: {exc}')
 

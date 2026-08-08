@@ -4,6 +4,7 @@ from core.auth import ensure_login
 from core.bootstrap import initialize_app
 from core.db import get_session
 from core.repository import get_competitor_product_df, save_competitor_product_df
+from core.competitor_scraper import CompetitorFetchError, CompetitorPriceFetcher
 
 initialize_app()
 ensure_login()
@@ -46,5 +47,34 @@ try:
             save_competitor_product_df(session, edited_df)
             st.success('경쟁사 상품 설정이 저장되었습니다.')
             st.rerun()
+
+        st.divider()
+        st.subheader('등록 URL 테스트')
+        st.caption('저장된 URL을 실제로 1번 확인해서 네이버 차단인지, 가격 추출 문제인지 바로 보여줍니다. CAPTCHA나 접근 제한은 우회하지 않습니다.')
+        if st.button('저장된 경쟁사 URL 테스트'):
+            # 테스트는 저장된 값 기준으로 수행합니다. 표를 수정했다면 먼저 위의 저장 버튼을 눌러 주세요.
+            test_df = get_competitor_product_df(session)
+            fetcher = CompetitorPriceFetcher(min_delay=2.0, max_delay=5.0, timeout=20)
+            test_rows = []
+            for _, test_row in test_df.iterrows():
+                if not bool(test_row.get('검색여부', True)):
+                    continue
+                item_name = str(test_row.get('상품명', '')).strip()
+                for col in test_df.columns:
+                    if not col.endswith(' URL'):
+                        continue
+                    url = str(test_row.get(col, '') or '').strip()
+                    if not url or url.lower() == 'nan':
+                        continue
+                    mall_name = col[:-4]
+                    try:
+                        price = fetcher.fetch_price(url)
+                        test_rows.append({'상품명': item_name, '경쟁사': mall_name, '상태': '성공', '가격': f'{price:,}', '상세': ''})
+                    except CompetitorFetchError as exc:
+                        test_rows.append({'상품명': item_name, '경쟁사': mall_name, '상태': '실패', '가격': '', '상세': str(exc)})
+            if test_rows:
+                st.dataframe(test_rows, use_container_width=True, hide_index=True)
+            else:
+                st.info('테스트할 저장 URL이 없습니다. 먼저 URL을 저장해 주세요.')
 finally:
     session.close()
