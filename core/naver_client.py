@@ -393,6 +393,14 @@ def match_product(
 
 
 def format_product_price(product: CommerceProduct | None) -> str:
-    if product is None or product.effective_price is None:
+    if product is None:
+        return ''
+
+    # 네이버에서 품절 상태인 우리 상품은 가격이 남아 있어도 비교 가격으로 사용하지 않습니다.
+    # 결과에는 `우리 -`처럼 빈 가격으로 표시됩니다.
+    if str(product.status_type or '').strip().upper() == 'OUTOFSTOCK':
+        return ''
+
+    if product.effective_price is None:
         return ''
     return f'{product.effective_price:,}'
