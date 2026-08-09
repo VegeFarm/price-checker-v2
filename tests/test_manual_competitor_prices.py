@@ -129,3 +129,51 @@ def test_own_product_settings_combines_id_and_search_keyword():
         assert row2['검색어'] == '와일드루꼴라 1kg'
     finally:
         session.close()
+
+
+def test_competitor_save_refreshes_latest_run_immediately():
+    from datetime import datetime
+    from core.models import RunHistory, RunPriceResult
+    from core.repository import get_latest_run
+
+    session = make_session()
+    try:
+        malls = {m.mall_display_name: m for m in session.query(Mall).all()}
+        run = RunHistory(
+            trigger_type='manual',
+            status='success',
+            started_at=datetime.now(),
+            finished_at=datetime.now(),
+            message_text='*바질\n우리 - 43,000\n그린팜 -',
+            error_text='',
+        )
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        session.add_all([
+            RunPriceResult(
+                run_id=run.id,
+                item_name='바질',
+                mall_name='채소팜',
+                mall_display_name='우리',
+                price_text='43,000',
+            ),
+            RunPriceResult(
+                run_id=run.id,
+                item_name='바질',
+                mall_name=malls['그린팜'].mall_name,
+                mall_display_name='그린팜',
+                price_text='',
+            ),
+        ])
+        session.commit()
+
+        result = save_manual_competitor_prices_from_text(session, '바질\n그린팜 45,000\n')
+        assert result['refreshed_run_id'] == run.id
+        latest = get_latest_run(session)
+        assert latest is not None
+        assert '그린팜 - 45,000' in latest.message_text
+        our_rows = [r for r in latest.results if r.mall_display_name == '우리' and r.item_name == '바질']
+        assert our_rows[0].price_text == '43,000'
+    finally:
+        session.close()

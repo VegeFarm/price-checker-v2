@@ -10,6 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from core.defaults import OWN_MALL_NAME
+from core.formatters import build_message_text
 from core.models import (
     Item,
     LegacyCompetitorProductRule,
@@ -464,6 +465,7 @@ def save_manual_competitor_prices_from_text(session: Session, text: str) -> dict
         saved += 1
 
     session.commit()
+    refreshed_run_id = refresh_latest_run_with_manual_prices(session)
     return {
         'saved': saved,
         'deleted': deleted_count,
@@ -472,6 +474,7 @@ def save_manual_competitor_prices_from_text(session: Session, text: str) -> dict
         'unknown_items': sorted(unknown_items),
         'unknown_malls': sorted(unknown_malls),
         'entry_count': len(entries),
+        'refreshed_run_id': refreshed_run_id,
     }
 
 
@@ -556,6 +559,67 @@ def load_runtime_config(session: Session):
     return target_malls, mall_display_names, own_product_config, price_rules, manual_prices
 
 
+def refresh_latest_run_with_manual_prices(session: Session) -> int | None:
+    """최신 성공 실행의 경쟁사 가격만 현재 수동 저장값으로 즉시 갱신합니다.
+
+    네이버 API를 다시 호출하지 않고, 마지막 실행에서 저장된 우리 가격은 그대로 유지합니다.
+    """
+    run = session.scalars(
+        select(RunHistory)
+        .where(RunHistory.status == 'success')
+        .order_by(RunHistory.id.desc())
+        .limit(1)
+    ).first()
+    if run is None:
+        return None
+
+    malls = get_malls(session, enabled_only=True)
+    items = get_items(session, enabled_only=True)
+    own_price_by_item: dict[str, str] = {}
+    for row in run.results:
+        if _is_our_mall(row):
+            own_price_by_item[row.item_name] = str(row.price_text or '')
+
+    manual_prices = load_manual_competitor_prices(session)
+    results: dict[str, list[tuple[str, str]]] = {}
+    rows: list[dict] = []
+
+    for item in items:
+        display_name = item.display_name
+        results[display_name] = []
+        for mall in malls:
+            mall_display = mall.mall_display_name
+            if mall.mall_name == OWN_MALL_NAME:
+                price_text = own_price_by_item.get(display_name, '')
+            else:
+                manual_price = manual_prices.get((display_name, mall.mall_name))
+                price_text = '' if manual_price is None else f'{int(manual_price):,}'
+
+            results[display_name].append((mall_display, price_text))
+            rows.append({
+                'item_name': display_name,
+                'mall_name': mall.mall_name,
+                'mall_display_name': mall_display,
+                'price_text': price_text,
+            })
+
+    session.execute(delete(RunPriceResult).where(RunPriceResult.run_id == run.id))
+    session.flush()
+    for row in rows:
+        session.add(RunPriceResult(
+            run_id=run.id,
+            item_name=row['item_name'],
+            mall_name=row['mall_name'],
+            mall_display_name=row['mall_display_name'],
+            price_text=row['price_text'],
+        ))
+
+    run.message_text = build_message_text(results)
+    run.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    session.commit()
+    return run.id
+
+
 # ---------------------------------------------------------------------------
 # 실행 이력 / 화면 요약
 # ---------------------------------------------------------------------------
@@ -633,7 +697,12 @@ def get_previous_run(session: Session, run_id: int) -> RunHistory | None:
 
 
 def get_latest_run(session: Session) -> RunHistory | None:
-    return session.scalars(select(RunHistory).order_by(RunHistory.id.desc()).limit(1)).first()
+    return session.scalars(
+        select(RunHistory)
+        .where(RunHistory.status == 'success')
+        .order_by(RunHistory.id.desc())
+        .limit(1)
+    ).first()
 
 
 def _price_to_int(price_text: str) -> int | None:
