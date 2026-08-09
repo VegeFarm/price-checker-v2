@@ -23,7 +23,7 @@ services:
   - type: cron
     name: price-checker-v2-cron
     runtime: python
-    schedule: "30 23 * * *"
+    schedule: "50 22 * * *"
     buildCommand: pip install -r requirements.txt
     startCommand: python cron_entry.py
     envVars:

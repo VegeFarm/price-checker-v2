@@ -1,12 +1,28 @@
 from __future__ import annotations
-from zoneinfo import ZoneInfo
-from collections import defaultdict
-import pandas as pd
-from sqlalchemy import select, delete
-from sqlalchemy.orm import Session
-from core.models import Mall, Item, SearchKeywordRule, TargetProductIdRule, PriceRule, CompetitorProductRule, RunHistory, RunPriceResult
 
-KST = ZoneInfo("Asia/Seoul")
+from collections import defaultdict
+from datetime import datetime, timezone
+import re
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
+
+from core.defaults import OWN_MALL_NAME
+from core.models import (
+    Item,
+    LegacyCompetitorProductRule,
+    Mall,
+    ManualCompetitorPrice,
+    PriceRule,
+    RunHistory,
+    RunPriceResult,
+    SearchKeywordRule,
+    TargetProductIdRule,
+)
+
+KST = ZoneInfo('Asia/Seoul')
 
 
 def format_display_time(dt):
@@ -17,46 +33,40 @@ def format_display_time(dt):
     return dt.astimezone(KST).strftime('%Y-%m-%d %H:%M:%S')
 
 
+def _clean_text(value) -> str:
+    if pd.isna(value):
+        return ''
+    text = str(value).strip()
+    if text.lower() in {'nan', 'none'}:
+        return ''
+    return text
+
+
+def _clean_bool(value, default: bool = True) -> bool:
+    if pd.isna(value):
+        return default
+    return bool(value)
+
+
+def _clean_int(value, default: int = 0) -> int:
+    try:
+        if pd.isna(value):
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
 def normalize_item_names(raw_names: list[str]) -> list[str]:
-    cleaned = []
-    seen = set()
+    cleaned: list[str] = []
+    seen: set[str] = set()
     for raw in raw_names:
-        name = str(raw).strip()
-        if not name or name.lower() in {'nan', 'none'}:
-            continue
-        if name in seen:
+        name = _clean_text(raw)
+        if not name or name in seen:
             continue
         cleaned.append(name)
         seen.add(name)
     return cleaned
-
-
-def ensure_items_from_search_rules(session: Session, item_names: list[str]) -> None:
-    existing_items = get_items(session)
-    existing_names = {item.display_name for item in existing_items}
-    next_sort_order = (max((item.sort_order for item in existing_items), default=0) or 0) + 1
-
-    for name in item_names:
-        if name not in existing_names:
-            session.add(Item(display_name=name, enabled=True, sort_order=next_sort_order))
-            existing_names.add(name)
-            next_sort_order += 1
-    session.commit()
-
-
-def sync_items_to_search_rules(session: Session, item_names: list[str]) -> None:
-    existing_items = get_items(session)
-    item_names_set = set(item_names)
-
-    for item in existing_items:
-        if item.display_name not in item_names_set:
-            session.execute(delete(SearchKeywordRule).where(SearchKeywordRule.item_id == item.id))
-            session.execute(delete(TargetProductIdRule).where(TargetProductIdRule.item_id == item.id))
-            session.execute(delete(PriceRule).where(PriceRule.item_id == item.id))
-            session.execute(delete(CompetitorProductRule).where(CompetitorProductRule.item_id == item.id))
-            session.delete(item)
-    session.commit()
-    session.expire_all()
 
 
 def get_malls(session: Session, enabled_only: bool = False) -> list[Mall]:
@@ -75,77 +85,114 @@ def get_items(session: Session, enabled_only: bool = False) -> list[Item]:
     return list(session.scalars(stmt).all())
 
 
-def get_search_keyword_df(session: Session) -> pd.DataFrame:
-    malls = get_malls(session)
+def _get_own_mall(session: Session) -> Mall:
+    mall = session.scalars(select(Mall).where(Mall.mall_name == OWN_MALL_NAME).limit(1)).first()
+    if mall is None:
+        raise RuntimeError(f"'{OWN_MALL_NAME}' 쇼핑몰 설정이 없습니다.")
+    return mall
+
+
+# ---------------------------------------------------------------------------
+# 우리 상품 설정: 기존 검색 규칙 + 상품 ID 규칙을 한 화면에서 관리
+# ---------------------------------------------------------------------------
+
+def get_own_product_settings_df(session: Session) -> pd.DataFrame:
+    own_mall = _get_own_mall(session)
     items = get_items(session)
-    mall_names = [m.mall_name for m in malls]
-    data = []
-    rules = {(r.item_id, r.mall_id): r.search_keyword for r in session.scalars(select(SearchKeywordRule)).all()}
+    search_rules = {
+        r.item_id: r.search_keyword
+        for r in session.scalars(
+            select(SearchKeywordRule).where(SearchKeywordRule.mall_id == own_mall.id)
+        ).all()
+    }
+    product_id_rules = {
+        r.item_id: r.target_product_id
+        for r in session.scalars(
+            select(TargetProductIdRule).where(TargetProductIdRule.mall_id == own_mall.id)
+        ).all()
+    }
+
+    rows = []
     for item in items:
-        row = {'상품명': item.display_name}
-        for mall in malls:
-            row[mall.mall_name] = rules.get((item.id, mall.id), '')
-        data.append(row)
-    return pd.DataFrame(data, columns=['상품명', *mall_names])
+        rows.append({
+            '사용여부': item.enabled,
+            '상품명': item.display_name,
+            '상품 ID': product_id_rules.get(item.id, ''),
+            '검색어': search_rules.get(item.id, ''),
+            '정렬순서': item.sort_order,
+        })
+    return pd.DataFrame(rows, columns=['사용여부', '상품명', '상품 ID', '검색어', '정렬순서'])
 
 
-def save_search_keyword_df(session: Session, df: pd.DataFrame) -> None:
-    malls = get_malls(session)
-    mall_by_name = {m.mall_name: m for m in malls}
+def save_own_product_settings_df(session: Session, df: pd.DataFrame) -> None:
+    own_mall = _get_own_mall(session)
+    existing_items = {item.display_name: item for item in get_items(session)}
 
-    item_names = normalize_item_names(df['상품명'].tolist())
-    ensure_items_from_search_rules(session, item_names)
-    sync_items_to_search_rules(session, item_names)
-    item_by_name = {i.display_name: i for i in get_items(session)}
+    desired_rows: list[dict] = []
+    seen_names: set[str] = set()
+    for row_index, (_, row) in enumerate(df.iterrows(), start=1):
+        item_name = _clean_text(row.get('상품명', ''))
+        if not item_name or item_name in seen_names:
+            continue
+        seen_names.add(item_name)
+        desired_rows.append({
+            'item_name': item_name,
+            'enabled': _clean_bool(row.get('사용여부', True), True),
+            'product_id': _clean_text(row.get('상품 ID', '')),
+            'search_keyword': _clean_text(row.get('검색어', '')),
+            'sort_order': _clean_int(row.get('정렬순서', row_index), row_index),
+        })
 
+    desired_names = {row['item_name'] for row in desired_rows}
+
+    # 화면에서 삭제한 상품은 관련 설정/수동 경쟁사 가격도 같이 제거합니다.
+    for item_name, item in list(existing_items.items()):
+        if item_name in desired_names:
+            continue
+        session.execute(delete(SearchKeywordRule).where(SearchKeywordRule.item_id == item.id))
+        session.execute(delete(TargetProductIdRule).where(TargetProductIdRule.item_id == item.id))
+        session.execute(delete(PriceRule).where(PriceRule.item_id == item.id))
+        session.execute(delete(ManualCompetitorPrice).where(ManualCompetitorPrice.item_id == item.id))
+        session.execute(delete(LegacyCompetitorProductRule).where(LegacyCompetitorProductRule.item_id == item.id))
+        session.delete(item)
+    session.flush()
+
+    # 새 상품 추가 및 기본 정보 갱신
+    for index, row in enumerate(desired_rows, start=1):
+        item = existing_items.get(row['item_name'])
+        if item is None or item not in session:
+            item = Item(display_name=row['item_name'])
+            session.add(item)
+            session.flush()
+            existing_items[row['item_name']] = item
+        item.enabled = row['enabled']
+        item.sort_order = row['sort_order'] if row['sort_order'] > 0 else index
+
+    # 구버전 경쟁사 검색어/상품ID까지 정리하고 우리 설정만 다시 저장합니다.
     session.execute(delete(SearchKeywordRule))
-    session.commit()
-
-    for _, row in df.iterrows():
-        item_name = str(row.get('상품명', '')).strip()
-        if not item_name:
-            continue
-        item = item_by_name[item_name]
-        for mall_name, mall in mall_by_name.items():
-            value = str(row.get(mall_name, '')).strip()
-            if value:
-                session.add(SearchKeywordRule(item_id=item.id, mall_id=mall.id, search_keyword=value))
-    session.commit()
-
-
-def get_target_product_id_df(session: Session) -> pd.DataFrame:
-    malls = get_malls(session)
-    items = get_items(session)
-    mall_names = [m.mall_name for m in malls]
-    rules = {(r.item_id, r.mall_id): r.target_product_id for r in session.scalars(select(TargetProductIdRule)).all()}
-    data = []
-    for item in items:
-        row = {'상품명': item.display_name}
-        for mall in malls:
-            row[mall.mall_name] = rules.get((item.id, mall.id), '')
-        data.append(row)
-    return pd.DataFrame(data, columns=['상품명', *mall_names])
-
-
-def save_target_product_id_df(session: Session, df: pd.DataFrame) -> None:
-    malls = get_malls(session)
-    mall_by_name = {m.mall_name: m for m in malls}
-    item_by_name = {i.display_name: i for i in get_items(session)}
-
     session.execute(delete(TargetProductIdRule))
+    session.flush()
+
+    for row in desired_rows:
+        item = existing_items[row['item_name']]
+        if row['product_id']:
+            session.add(TargetProductIdRule(
+                item_id=item.id,
+                mall_id=own_mall.id,
+                target_product_id=row['product_id'],
+            ))
+        if row['search_keyword']:
+            session.add(SearchKeywordRule(
+                item_id=item.id,
+                mall_id=own_mall.id,
+                search_keyword=row['search_keyword'],
+            ))
     session.commit()
 
-    for _, row in df.iterrows():
-        item_name = str(row.get('상품명', '')).strip()
-        if not item_name or item_name not in item_by_name:
-            continue
-        item = item_by_name[item_name]
-        for mall_name, mall in mall_by_name.items():
-            value = str(row.get(mall_name, '')).strip()
-            if value:
-                session.add(TargetProductIdRule(item_id=item.id, mall_id=mall.id, target_product_id=value))
-    session.commit()
 
+# ---------------------------------------------------------------------------
+# 가격 규칙 / 쇼핑몰 설정
+# ---------------------------------------------------------------------------
 
 def get_price_rule_df(session: Session) -> pd.DataFrame:
     items = {i.id: i.display_name for i in get_items(session)}
@@ -166,12 +213,12 @@ def save_price_rule_df(session: Session, df: pd.DataFrame) -> None:
     mall_by_name = {m.mall_name: m for m in get_malls(session)}
 
     session.execute(delete(PriceRule))
-    session.commit()
+    session.flush()
 
     for _, row in df.iterrows():
-        item_name = str(row.get('상품명', '')).strip()
-        mall_name = str(row.get('쇼핑몰명', '')).strip()
-        op = str(row.get('연산', '')).strip()
+        item_name = _clean_text(row.get('상품명', ''))
+        mall_name = _clean_text(row.get('쇼핑몰명', ''))
+        op = _clean_text(row.get('연산', ''))
         raw_value = row.get('값', '')
         if not item_name or not mall_name or not op:
             continue
@@ -205,161 +252,256 @@ def get_mall_settings_df(session: Session) -> pd.DataFrame:
 def save_mall_settings_df(session: Session, df: pd.DataFrame) -> None:
     existing = {m.mall_name: m for m in get_malls(session)}
     for _, row in df.iterrows():
-        mall_name = str(row.get('실제쇼핑몰명', '')).strip()
+        mall_name = _clean_text(row.get('실제쇼핑몰명', ''))
         if not mall_name:
             continue
         mall = existing.get(mall_name)
         if mall is None:
             mall = Mall(
                 mall_name=mall_name,
-                mall_display_name=str(row.get('표시쇼핑몰명', mall_name)).strip() or mall_name,
-                enabled=bool(row.get('사용여부', True)),
-                sort_order=int(row.get('정렬순서', len(existing) + 1) or 0),
+                mall_display_name=_clean_text(row.get('표시쇼핑몰명', mall_name)) or mall_name,
+                enabled=_clean_bool(row.get('사용여부', True), True),
+                sort_order=_clean_int(row.get('정렬순서', len(existing) + 1), len(existing) + 1),
             )
             session.add(mall)
             existing[mall_name] = mall
         else:
-            mall.mall_display_name = str(row.get('표시쇼핑몰명', mall_name)).strip() or mall_name
-            mall.enabled = bool(row.get('사용여부', True))
-            mall.sort_order = int(row.get('정렬순서', mall.sort_order) or 0)
+            mall.mall_display_name = _clean_text(row.get('표시쇼핑몰명', mall_name)) or mall_name
+            mall.enabled = _clean_bool(row.get('사용여부', True), True)
+            mall.sort_order = _clean_int(row.get('정렬순서', mall.sort_order), mall.sort_order)
     session.commit()
 
 
+# ---------------------------------------------------------------------------
+# 경쟁사 가격 수동 입력/저장
+# ---------------------------------------------------------------------------
 
-def _competitor_url_columns(malls: list[Mall]) -> dict[str, str]:
-    """mall_name -> 화면에 표시할 URL 열 이름."""
-    display_counts: dict[str, int] = {}
-    for mall in malls:
-        display_counts[mall.mall_display_name] = display_counts.get(mall.mall_display_name, 0) + 1
-
-    columns: dict[str, str] = {}
-    for mall in malls:
-        if display_counts.get(mall.mall_display_name, 0) > 1:
-            columns[mall.mall_name] = f'{mall.mall_display_name} ({mall.mall_name}) URL'
-        else:
-            columns[mall.mall_name] = f'{mall.mall_display_name} URL'
-    return columns
+def _normalize_label(text: str) -> str:
+    return re.sub(r'\s+', '', str(text or '')).strip().lower()
 
 
-def get_competitor_product_df(session: Session) -> pd.DataFrame:
-    """상품별 경쟁사 검색 여부와 경쟁사 URL을 한 행에 표시합니다.
+def _parse_price_value(raw: str) -> int | None:
+    text = str(raw or '').strip()
+    if not text:
+        return None
+    text = text.replace(',', '').replace('원', '').replace('₩', '').strip()
+    if not re.fullmatch(r'\d+(?:\.0+)?', text):
+        raise ValueError(f'가격 형식이 올바르지 않습니다: {raw}')
+    value = int(float(text))
+    if value < 0:
+        raise ValueError(f'가격은 0 이상이어야 합니다: {raw}')
+    return value
 
-    검색여부는 상품 단위 하나의 체크박스이며, 체크하면 해당 상품의 모든 경쟁사 URL을
-    검색합니다. Item/Mall 마스터를 기준으로 동적으로 만들기 때문에 새 상품이 추가되면
-    자동으로 새 행이 생기며 기본값은 검색=True입니다.
+
+def parse_competitor_price_text(text: str) -> tuple[list[dict], list[str]]:
+    """사용자 붙여넣기 형식을 파싱합니다.
+
+    반환 entry: {line_no, item_name, mall_label, price}
+    price=None은 사용자가 `몰 -`처럼 빈 값을 명시하여 기존 가격 삭제를 요청한 뜻입니다.
     """
-    from core.defaults import OWN_MALL_NAME
+    entries: list[dict] = []
+    errors: list[str] = []
+    current_item = ''
 
+    for line_no, raw_line in enumerate(str(text or '').splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.startswith('*'):
+            current_item = line[1:].strip()
+            if not current_item:
+                errors.append(f'{line_no}행: 상품명이 비어 있습니다.')
+            continue
+
+        if not current_item:
+            errors.append(f'{line_no}행: 먼저 *상품명 형식의 상품명을 입력해 주세요.')
+            continue
+
+        match = re.match(r'^(.+?)\s*-\s*(.*)$', line)
+        if not match:
+            errors.append(f'{line_no}행: "쇼핑몰 - 가격" 형식이 아닙니다.')
+            continue
+
+        mall_label = match.group(1).strip()
+        raw_price = match.group(2).strip()
+        if not mall_label:
+            errors.append(f'{line_no}행: 쇼핑몰명이 비어 있습니다.')
+            continue
+        try:
+            price = _parse_price_value(raw_price)
+        except ValueError as exc:
+            errors.append(f'{line_no}행: {exc}')
+            continue
+
+        entries.append({
+            'line_no': line_no,
+            'item_name': current_item,
+            'mall_label': mall_label,
+            'price': price,
+        })
+
+    return entries, errors
+
+
+def save_manual_competitor_prices_from_text(session: Session, text: str) -> dict:
+    entries, parse_errors = parse_competitor_price_text(text)
+    items = get_items(session)
+    malls = get_malls(session)
+    item_by_name = {item.display_name: item for item in items}
+
+    mall_aliases: dict[str, Mall] = {}
+    for mall in malls:
+        for label in {mall.mall_name, mall.mall_display_name}:
+            key = _normalize_label(label)
+            if key:
+                mall_aliases[key] = mall
+
+    existing = {
+        (row.item_id, row.mall_id): row
+        for row in session.scalars(select(ManualCompetitorPrice)).all()
+    }
+
+    unknown_items: set[str] = set()
+    unknown_malls: set[str] = set()
+    ignored_own = 0
+    saved = 0
+    deleted_count = 0
+
+    for entry in entries:
+        item = item_by_name.get(entry['item_name'])
+        if item is None:
+            unknown_items.add(entry['item_name'])
+            continue
+
+        mall = mall_aliases.get(_normalize_label(entry['mall_label']))
+        if mall is None:
+            unknown_malls.add(entry['mall_label'])
+            continue
+        if mall.mall_name == OWN_MALL_NAME:
+            ignored_own += 1
+            continue
+
+        key = (item.id, mall.id)
+        row = existing.get(key)
+        price = entry['price']
+        if price is None:
+            if row is not None:
+                session.delete(row)
+                existing.pop(key, None)
+                deleted_count += 1
+            continue
+
+        if row is None:
+            row = ManualCompetitorPrice(
+                item_id=item.id,
+                mall_id=mall.id,
+                price=price,
+                updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+            session.add(row)
+            existing[key] = row
+        else:
+            row.price = price
+            row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        saved += 1
+
+    session.commit()
+    return {
+        'saved': saved,
+        'deleted': deleted_count,
+        'ignored_own': ignored_own,
+        'parse_errors': parse_errors,
+        'unknown_items': sorted(unknown_items),
+        'unknown_malls': sorted(unknown_malls),
+        'entry_count': len(entries),
+    }
+
+
+def get_manual_competitor_price_df(session: Session) -> pd.DataFrame:
     items = get_items(session)
     malls = [m for m in get_malls(session) if m.mall_name != OWN_MALL_NAME]
-    rules = {(r.item_id, r.mall_id): r for r in session.scalars(select(CompetitorProductRule)).all()}
-    url_columns = _competitor_url_columns(malls)
+    prices = {
+        (r.item_id, r.mall_id): r.price
+        for r in session.scalars(select(ManualCompetitorPrice)).all()
+    }
 
     rows = []
     for item in items:
-        item_rules = [rules.get((item.id, mall.id)) for mall in malls]
-        enabled = all(True if rule is None else bool(rule.search_enabled) for rule in item_rules)
-        row = {
-            '상품명': item.display_name,
-            '검색여부': enabled,
-        }
+        row = {'상품명': item.display_name}
         for mall in malls:
-            rule = rules.get((item.id, mall.id))
-            row[url_columns[mall.mall_name]] = '' if rule is None else str(rule.product_url or '')
+            value = prices.get((item.id, mall.id))
+            row[mall.mall_display_name] = '' if value is None else f'{value:,}'
         rows.append(row)
-
-    columns = ['상품명', '검색여부', *[url_columns[m.mall_name] for m in malls]]
-    return pd.DataFrame(rows, columns=columns)
+    return pd.DataFrame(rows, columns=['상품명', *[m.mall_display_name for m in malls]])
 
 
-def save_competitor_product_df(session: Session, df: pd.DataFrame) -> None:
-    """상품 단위 체크값을 해당 상품의 모든 경쟁사 규칙에 동일하게 저장합니다."""
-    from core.defaults import OWN_MALL_NAME
-
-    item_by_name = {i.display_name: i for i in get_items(session)}
-    malls = [m for m in get_malls(session) if m.mall_name != OWN_MALL_NAME]
-    url_columns = _competitor_url_columns(malls)
-
-    session.execute(delete(CompetitorProductRule))
-    session.commit()
-
-    for _, row in df.iterrows():
-        item_name = str(row.get('상품명', '')).strip()
-        if item_name not in item_by_name:
+def load_manual_competitor_prices(session: Session) -> dict[tuple[str, str], int]:
+    item_names = {i.id: i.display_name for i in get_items(session, enabled_only=True)}
+    mall_names = {m.id: m.mall_name for m in get_malls(session, enabled_only=True)}
+    result: dict[tuple[str, str], int] = {}
+    for row in session.scalars(select(ManualCompetitorPrice)).all():
+        item_name = item_names.get(row.item_id)
+        mall_name = mall_names.get(row.mall_id)
+        if not item_name or not mall_name or mall_name == OWN_MALL_NAME:
             continue
-
-        raw_enabled = row.get('검색여부', True)
-        enabled = bool(raw_enabled) if not pd.isna(raw_enabled) else True
-        item = item_by_name[item_name]
-
-        for mall in malls:
-            raw_url = row.get(url_columns[mall.mall_name], '')
-            product_url = '' if pd.isna(raw_url) else str(raw_url).strip()
-            session.add(CompetitorProductRule(
-                item_id=item.id,
-                mall_id=mall.id,
-                product_url=product_url,
-                search_enabled=enabled,
-            ))
-    session.commit()
+        result[(item_name, mall_name)] = int(row.price)
+    return result
 
 
-def load_competitor_product_config(session: Session) -> dict[tuple[str, str], dict]:
-    """(상품명, 경쟁사명) -> {enabled, url}.
-
-    저장된 행이 없으면 기본 검색여부는 True, URL은 빈칸으로 취급합니다.
-    """
-    from core.defaults import OWN_MALL_NAME
-
-    items = get_items(session, enabled_only=True)
-    malls = [m for m in get_malls(session, enabled_only=True) if m.mall_name != OWN_MALL_NAME]
-    rules = {(r.item_id, r.mall_id): r for r in session.scalars(select(CompetitorProductRule)).all()}
-    config: dict[tuple[str, str], dict] = {}
-    for item in items:
-        for mall in malls:
-            rule = rules.get((item.id, mall.id))
-            config[(item.display_name, mall.mall_name)] = {
-                'enabled': True if rule is None else bool(rule.search_enabled),
-                'url': '' if rule is None else str(rule.product_url or '').strip(),
-            }
-    return config
+# ---------------------------------------------------------------------------
+# 실행 시 사용하는 설정
+# ---------------------------------------------------------------------------
 
 def load_runtime_config(session: Session):
     malls = get_malls(session, enabled_only=True)
     items = get_items(session, enabled_only=True)
+    own_mall = next((m for m in malls if m.mall_name == OWN_MALL_NAME), None)
+    if own_mall is None:
+        raise RuntimeError(f"'{OWN_MALL_NAME}' 쇼핑몰이 비활성화되어 있거나 없습니다.")
+
     target_malls = [m.mall_name for m in malls]
     mall_display_names = {m.mall_name: m.mall_display_name for m in malls}
 
-    search_rules = {(r.item_id, r.mall_id): r.search_keyword for r in session.scalars(select(SearchKeywordRule)).all()}
-    product_id_rules = {(r.item_id, r.mall_id): r.target_product_id for r in session.scalars(select(TargetProductIdRule)).all()}
-    price_rules_db = {(r.item_id, r.mall_id): (r.op, r.value) for r in session.scalars(select(PriceRule)).all()}
+    search_rules = {
+        r.item_id: r.search_keyword
+        for r in session.scalars(
+            select(SearchKeywordRule).where(SearchKeywordRule.mall_id == own_mall.id)
+        ).all()
+    }
+    product_id_rules = {
+        r.item_id: r.target_product_id
+        for r in session.scalars(
+            select(TargetProductIdRule).where(TargetProductIdRule.mall_id == own_mall.id)
+        ).all()
+    }
+    price_rules_db = {
+        (r.item_id, r.mall_id): (r.op, r.value)
+        for r in session.scalars(select(PriceRule)).all()
+    }
 
-    search_keywords = {}
-    target_product_ids = {}
-    price_rules = {}
-
+    own_product_config: dict[str, dict[str, str]] = {}
+    price_rules: dict[str, dict[str, tuple[str, float]]] = {}
     for item in items:
-        mall_keywords = {}
-        mall_target_ids = {}
-        item_price_rules = {}
+        own_product_config[item.display_name] = {
+            'search_keyword': search_rules.get(item.id, '') or item.display_name,
+            'target_product_id': product_id_rules.get(item.id, ''),
+        }
+        item_rules: dict[str, tuple[str, float]] = {}
         for mall in malls:
-            keyword = search_rules.get((item.id, mall.id), '')
-            if keyword:
-                mall_keywords[mall.mall_name] = keyword
-            target_id = product_id_rules.get((item.id, mall.id), '')
-            if target_id:
-                mall_target_ids[mall.mall_name] = target_id
-            price_rule = price_rules_db.get((item.id, mall.id))
-            if price_rule:
-                item_price_rules[mall.mall_name] = price_rule
-        search_keywords[item.display_name] = mall_keywords
-        if mall_target_ids:
-            target_product_ids[item.display_name] = mall_target_ids
-        if item_price_rules:
-            price_rules[item.display_name] = item_price_rules
+            rule = price_rules_db.get((item.id, mall.id))
+            if rule:
+                item_rules[mall.mall_name] = rule
+        if item_rules:
+            price_rules[item.display_name] = item_rules
 
-    return target_malls, mall_display_names, search_keywords, target_product_ids, price_rules
+    manual_prices = load_manual_competitor_prices(session)
+    return target_malls, mall_display_names, own_product_config, price_rules, manual_prices
 
+
+# ---------------------------------------------------------------------------
+# 실행 이력 / 화면 요약
+# ---------------------------------------------------------------------------
 
 def prune_run_history(session: Session, keep_latest: int = 3) -> None:
     runs = list(session.scalars(select(RunHistory).order_by(RunHistory.id.desc())).all())
@@ -450,42 +592,38 @@ def _price_to_int(price_text: str) -> int | None:
 def _is_our_mall(row: RunPriceResult) -> bool:
     display_name = str(row.mall_display_name or '').strip()
     mall_name = str(row.mall_name or '').strip()
-    return display_name == '우리' or mall_name == '채소팜'
+    return display_name == '우리' or mall_name == OWN_MALL_NAME
 
 
 def _format_signed_price(value: int) -> str:
-    return f"{value:+,}"
+    return f'{value:+,}'
 
 
 def _format_signed_percent(value: float) -> str:
-    return f"{value * 100:+.1f}%"
+    return f'{value * 100:+.1f}%'
 
 
 def build_our_price_map(run: RunHistory | None) -> dict[str, int]:
     if run is None:
         return {}
-
     price_map: dict[str, int] = {}
     for row in run.results:
         if not _is_our_mall(row):
             continue
         value = _price_to_int(row.price_text)
-        if value is None:
-            continue
-        price_map[row.item_name] = value
+        if value is not None:
+            price_map[row.item_name] = value
     return price_map
 
 
 def build_price_map_by_item_mall(run: RunHistory | None) -> dict[str, dict[str, int]]:
     if run is None:
         return {}
-
     price_map: dict[str, dict[str, int]] = defaultdict(dict)
     for row in run.results:
         value = _price_to_int(row.price_text)
         if value is None:
             continue
-
         item_prices = price_map[row.item_name]
         item_prices[str(row.mall_display_name).strip()] = value
         raw_mall_name = str(row.mall_name).strip()
@@ -560,7 +698,12 @@ def build_run_side_summary(run: RunHistory) -> tuple[list[dict], list[dict]]:
 
         should_show = is_high or is_low or has_min_gap
         if should_show:
-            severity_score = max(abs(avg_diff), abs(min_diff), int(abs(avg_ratio) * 1000), int(abs(min_ratio) * 1000))
+            severity_score = max(
+                abs(avg_diff),
+                abs(min_diff),
+                int(abs(avg_ratio) * 1000),
+                int(abs(min_ratio) * 1000),
+            )
             large_gap_items.append({
                 'item_name': item_name,
                 'our_price': f'{our_price:,}',

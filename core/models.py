@@ -1,6 +1,7 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from datetime import datetime
 
 
 class Base(DeclarativeBase):
@@ -27,6 +28,12 @@ class Item(Base):
 
 
 class SearchKeywordRule(Base):
+    """우리 상품의 검색어 fallback 규칙.
+
+    기존 DB 호환을 위해 테이블명은 유지합니다. 화면에서는 '우리 상품 설정'에서
+    상품 ID와 함께 한 번에 관리합니다.
+    """
+
     __tablename__ = 'search_keyword_rule'
     __table_args__ = (UniqueConstraint('item_id', 'mall_id', name='uq_search_keyword_rule'),)
 
@@ -37,6 +44,8 @@ class SearchKeywordRule(Base):
 
 
 class TargetProductIdRule(Base):
+    """우리 상품의 네이버 상품 ID 우선 매칭 규칙."""
+
     __tablename__ = 'target_product_id_rule'
     __table_args__ = (UniqueConstraint('item_id', 'mall_id', name='uq_target_product_id_rule'),)
 
@@ -57,7 +66,33 @@ class PriceRule(Base):
     value: Mapped[float] = mapped_column(Float, nullable=False)
 
 
-class CompetitorProductRule(Base):
+class ManualCompetitorPrice(Base):
+    """사용자가 직접 입력한 경쟁사 최신 가격."""
+
+    __tablename__ = 'manual_competitor_price'
+    __table_args__ = (UniqueConstraint('item_id', 'mall_id', name='uq_manual_competitor_price'),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey('item_master.id'), nullable=False)
+    mall_id: Mapped[int] = mapped_column(ForeignKey('mall_master.id'), nullable=False)
+    price: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class AppSetting(Base):
+    __tablename__ = 'app_setting'
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, default='')
+
+
+class LegacyCompetitorProductRule(Base):
+    """구버전 경쟁사 URL 설정 테이블.
+
+    직접 조회 기능은 삭제되었고 이 모델은 기존 DB의 URL 데이터를 안전하게 정리하기
+    위한 호환 용도로만 남겨 둡니다. 새 코드에서는 이 테이블을 조회에 사용하지 않습니다.
+    """
+
     __tablename__ = 'competitor_product_rule'
     __table_args__ = (UniqueConstraint('item_id', 'mall_id', name='uq_competitor_product_rule'),)
 

@@ -7,14 +7,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy import delete
 from core.bootstrap import initialize_app
 from core.db import create_tables, get_session
-from core.models import Item, Mall, PriceRule, RunHistory, RunPriceResult, SearchKeywordRule, TargetProductIdRule
+from core.models import (
+    AppSetting,
+    Item,
+    LegacyCompetitorProductRule,
+    Mall,
+    ManualCompetitorPrice,
+    PriceRule,
+    RunHistory,
+    RunPriceResult,
+    SearchKeywordRule,
+    TargetProductIdRule,
+)
 
 
 def main() -> None:
     create_tables()
     session = get_session()
     try:
-        for model in (RunPriceResult, RunHistory, SearchKeywordRule, TargetProductIdRule, PriceRule, Item, Mall):
+        for model in (
+            RunPriceResult,
+            RunHistory,
+            ManualCompetitorPrice,
+            LegacyCompetitorProductRule,
+            SearchKeywordRule,
+            TargetProductIdRule,
+            PriceRule,
+            AppSetting,
+            Item,
+            Mall,
+        ):
             session.execute(delete(model))
         session.commit()
     finally:

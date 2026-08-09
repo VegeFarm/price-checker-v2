@@ -7,9 +7,8 @@ from core.defaults import OWN_MALL_NAME
 from core.db import get_session
 from core.formatters import build_message_text
 from core.naver_client import NaverCommerceClient, format_product_price, match_product
-from core.repository import load_runtime_config, load_competitor_product_config, save_run_result
+from core.repository import load_runtime_config, save_run_result
 from core.telegram_sender import send_telegram_message
-from core.competitor_scraper import CompetitorFetchError, CompetitorPriceFetcher
 
 
 def apply_price_rule(display_name, mall_name, price_text, price_rules):
@@ -48,41 +47,45 @@ def run_price_check(trigger_type: str = 'manual') -> dict:
     rows: list[dict] = []
     message_text = ''
     try:
-        target_malls, mall_display_names, search_keywords, target_product_ids, price_rules = load_runtime_config(session)
-        competitor_config = load_competitor_product_config(session)
+        (
+            target_malls,
+            mall_display_names,
+            own_product_config,
+            price_rules,
+            manual_competitor_prices,
+        ) = load_runtime_config(session)
+
         products = NaverCommerceClient().list_products()
-        competitor_fetcher = CompetitorPriceFetcher(min_delay=2.0, max_delay=5.0, timeout=20)
-        competitor_errors: list[dict] = []
-        competitor_request_count = 0
         results: dict[str, list[tuple[str, str]]] = {}
+        own_matched_count = 0
+        own_missing_count = 0
+        manual_price_count = 0
 
-        for display_name, mall_keywords in search_keywords.items():
-            mall_ids = target_product_ids.get(display_name, {})
+        for display_name, own_config in own_product_config.items():
             results[display_name] = []
-
             for mall in target_malls:
                 mall_display = mall_display_names.get(mall, mall)
                 price = ''
+
                 if mall == OWN_MALL_NAME:
-                    keyword = mall_keywords.get(mall, display_name)
-                    target_id = mall_ids.get(mall, '')
-                    product = match_product(products, keyword, target_id)
+                    # match_product는 상품 ID를 먼저 찾고, 없거나 실패하면 검색어로 fallback 합니다.
+                    product = match_product(
+                        products,
+                        own_config.get('search_keyword', display_name),
+                        own_config.get('target_product_id', ''),
+                    )
                     price = format_product_price(product)
                     price = apply_price_rule(display_name, mall, price, price_rules)
+                    if price:
+                        own_matched_count += 1
+                    else:
+                        own_missing_count += 1
                 else:
-                    rule = competitor_config.get((display_name, mall), {'enabled': True, 'url': ''})
-                    if rule.get('enabled', True) and rule.get('url'):
-                        competitor_request_count += 1
-                        try:
-                            raw_price = competitor_fetcher.fetch_price(rule['url'])
-                            price = f'{raw_price:,}'
-                            price = apply_price_rule(display_name, mall, price, price_rules)
-                        except CompetitorFetchError as exc:
-                            competitor_errors.append({
-                                'item_name': display_name,
-                                'mall_name': mall_display,
-                                'error': str(exc),
-                            })
+                    manual_price = manual_competitor_prices.get((display_name, mall))
+                    if manual_price is not None:
+                        # 경쟁사 수동 가격은 사용자가 입력한 최종 비교 가격을 그대로 사용합니다.
+                        price = f'{int(manual_price):,}'
+                        manual_price_count += 1
 
                 results[display_name].append((mall_display, price))
                 rows.append({
@@ -112,8 +115,9 @@ def run_price_check(trigger_type: str = 'manual') -> dict:
             'message_text': message_text,
             'rows': rows,
             'product_count': len(products),
-            'competitor_request_count': competitor_request_count,
-            'competitor_errors': competitor_errors,
+            'own_matched_count': own_matched_count,
+            'own_missing_count': own_missing_count,
+            'manual_competitor_price_count': manual_price_count,
         }
     except Exception as exc:
         finished_at = datetime.now(timezone.utc)

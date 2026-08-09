@@ -1,15 +1,17 @@
 import html
 import re
+
 import streamlit as st
+
 from core.auth import ensure_login
 from core.bootstrap import initialize_app
 from core.db import get_session
 from core.repository import (
+    build_price_map_by_item_mall,
+    build_run_side_summary,
+    get_previous_run,
     get_recent_runs_meta,
     get_run_history,
-    get_previous_run,
-    build_run_side_summary,
-    build_price_map_by_item_mall,
 )
 
 PLUS_COLOR = '#66C6F2'
@@ -27,7 +29,7 @@ def render_large_gap_summary(large_gap_items: list[dict]) -> None:
                 f"  - {item['status_text']}"
             )
     else:
-        st.caption('가격 차이가 큰 품목이 없거나 수집된 경쟁사 가격이 아직 없습니다.')
+        st.caption('가격 차이가 큰 품목이 없거나 저장된 경쟁사 가격이 아직 없습니다.')
 
 
 def _price_to_int(price_text: str) -> int | None:

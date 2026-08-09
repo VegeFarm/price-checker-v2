@@ -73,6 +73,15 @@ class NaverClientTests(unittest.TestCase):
         ]
         self.assertEqual(match_product(products, '고수 1단', '200').channel_product_no, '200')
 
+    def test_invalid_id_falls_back_to_search_keyword(self):
+        products = [
+            CommerceProduct('와일드루꼴라 1kg', '100', '10', '', 33000, None, 'SALE'),
+            CommerceProduct('로케트 500g', '200', '20', '', 22000, None, 'SALE'),
+        ]
+        matched = match_product(products, '와일드루꼴라 1kg', 'not-found-id')
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched.channel_product_no, '100')
+
     def test_wrong_weight_is_rejected(self):
         products = [
             CommerceProduct('딜 500g', '1', '11', '', 5000, None, 'SALE'),

@@ -1,5 +1,6 @@
 import pandas as pd
 import streamlit as st
+
 from core.auth import ensure_login
 from core.bootstrap import initialize_app
 from core.db import get_session
@@ -8,7 +9,7 @@ from core.repository import get_items, get_malls, get_price_rule_df, save_price_
 initialize_app()
 ensure_login()
 st.title('가격 규칙')
-st.caption('단위 환산이 필요한 채소팜 가격에 mul/add/sub/set/rate 규칙을 적용합니다.')
+st.caption('단위 환산이 필요한 가격에 mul/add/sub/set/rate 규칙을 적용합니다. 경쟁사 수동 가격은 입력한 금액 그대로 사용합니다.')
 session = get_session()
 try:
     df = get_price_rule_df(session)
