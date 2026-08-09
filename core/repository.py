@@ -293,7 +293,43 @@ def _parse_price_value(raw: str) -> int | None:
     return value
 
 
-def parse_competitor_price_text(text: str) -> tuple[list[dict], list[str]]:
+def _build_known_label_map(labels: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for label in labels:
+        cleaned = _clean_text(label)
+        if cleaned:
+            result[_normalize_label(cleaned)] = cleaned
+    return result
+
+
+
+def _parse_mall_line_without_dash(line: str, known_mall_map: dict[str, str]) -> tuple[str, str] | None:
+    stripped = line.strip()
+    normalized = _normalize_label(stripped)
+    if not stripped or not normalized:
+        return None
+    for mall_key in sorted(known_mall_map.keys(), key=len, reverse=True):
+        if not normalized.startswith(mall_key):
+            continue
+        mall_label = known_mall_map[mall_key]
+        original_no_space = re.sub(r'\s+', '', stripped)
+        remainder_no_space = original_no_space[len(mall_key):].strip()
+        if not remainder_no_space:
+            return None
+        try:
+            price = _parse_price_value(remainder_no_space)
+        except ValueError:
+            return None
+        return mall_label, str(price)
+    return None
+
+
+
+def parse_competitor_price_text(
+    text: str,
+    known_item_names: list[str] | None = None,
+    known_mall_labels: list[str] | None = None,
+) -> tuple[list[dict], list[str]]:
     """사용자 붙여넣기 형식을 파싱합니다.
 
     반환 entry: {line_no, item_name, mall_label, price}
@@ -302,60 +338,81 @@ def parse_competitor_price_text(text: str) -> tuple[list[dict], list[str]]:
     entries: list[dict] = []
     errors: list[str] = []
     current_item = ''
+    item_name_map = _build_known_label_map(known_item_names or [])
+    mall_label_map = _build_known_label_map(known_mall_labels or [])
 
     for line_no, raw_line in enumerate(str(text or '').splitlines(), start=1):
         line = raw_line.strip()
         if not line:
             continue
 
+        raw_item_name = line[1:].strip() if line.startswith('*') else line.strip()
+        normalized_item_name = _normalize_label(raw_item_name)
         if line.startswith('*'):
-            current_item = line[1:].strip()
+            current_item = raw_item_name
             if not current_item:
                 errors.append(f'{line_no}행: 상품명이 비어 있습니다.')
             continue
-
-        if not current_item:
-            errors.append(f'{line_no}행: 먼저 *상품명 형식의 상품명을 입력해 주세요.')
+        if normalized_item_name in item_name_map:
+            current_item = item_name_map[normalized_item_name]
             continue
 
+        mall_label = None
+        raw_price = ''
         match = re.match(r'^(.+?)\s*-\s*(.*)$', line)
-        if not match:
-            errors.append(f'{line_no}행: "쇼핑몰 - 가격" 형식이 아닙니다.')
+        if match:
+            mall_label = match.group(1).strip()
+            raw_price = match.group(2).strip()
+        else:
+            parsed = _parse_mall_line_without_dash(line, mall_label_map)
+            if parsed is not None:
+                mall_label, raw_price = parsed
+
+        if mall_label is not None:
+            if not current_item:
+                errors.append(f'{line_no}행: 먼저 상품명을 입력해 주세요.')
+                continue
+            if not mall_label:
+                errors.append(f'{line_no}행: 쇼핑몰명이 비어 있습니다.')
+                continue
+            try:
+                price = _parse_price_value(raw_price)
+            except ValueError as exc:
+                errors.append(f'{line_no}행: {exc}')
+                continue
+            entries.append({
+                'line_no': line_no,
+                'item_name': current_item,
+                'mall_label': mall_label,
+                'price': price,
+            })
             continue
 
-        mall_label = match.group(1).strip()
-        raw_price = match.group(2).strip()
-        if not mall_label:
-            errors.append(f'{line_no}행: 쇼핑몰명이 비어 있습니다.')
-            continue
-        try:
-            price = _parse_price_value(raw_price)
-        except ValueError as exc:
-            errors.append(f'{line_no}행: {exc}')
-            continue
-
-        entries.append({
-            'line_no': line_no,
-            'item_name': current_item,
-            'mall_label': mall_label,
-            'price': price,
-        })
+        errors.append(f'{line_no}행: 상품명 또는 가격 형식을 읽지 못했습니다.')
 
     return entries, errors
 
 
 def save_manual_competitor_prices_from_text(session: Session, text: str) -> dict:
-    entries, parse_errors = parse_competitor_price_text(text)
     items = get_items(session)
     malls = get_malls(session)
     item_by_name = {item.display_name: item for item in items}
 
+    known_item_names = [item.display_name for item in items]
+    known_mall_labels: list[str] = []
     mall_aliases: dict[str, Mall] = {}
     for mall in malls:
         for label in {mall.mall_name, mall.mall_display_name}:
             key = _normalize_label(label)
             if key:
                 mall_aliases[key] = mall
+                known_mall_labels.append(label)
+
+    entries, parse_errors = parse_competitor_price_text(
+        text,
+        known_item_names=known_item_names,
+        known_mall_labels=known_mall_labels,
+    )
 
     existing = {
         (row.item_id, row.mall_id): row

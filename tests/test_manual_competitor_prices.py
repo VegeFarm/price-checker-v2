@@ -26,6 +26,7 @@ def make_session():
     session.add_all([
         Item(display_name='로케트', enabled=True, sort_order=1),
         Item(display_name='바질', enabled=True, sort_order=2),
+        Item(display_name='와일드', enabled=True, sort_order=3),
     ])
     session.commit()
     return session
@@ -33,11 +34,29 @@ def make_session():
 
 def test_parser_supports_blank_delete():
     entries, errors = parse_competitor_price_text(
-        '*바질\n그린팜 - 45,000\n야채이야기 -\n'
+        '*바질\n그린팜 - 45,000\n야채이야기 -\n',
+        known_item_names=['바질'],
+        known_mall_labels=['우리', '그린팜', '야채왕', '야채이야기', '쉐프의정원'],
     )
     assert not errors
     assert entries[0]['price'] == 45000
     assert entries[1]['price'] is None
+
+
+def test_parser_supports_no_star_and_no_dash():
+    entries, errors = parse_competitor_price_text(
+        '로케트\n그린팜 55,000\n야채왕 55000\n와일드\n그린팜 - 20,000\n',
+        known_item_names=['로케트', '바질', '와일드'],
+        known_mall_labels=['우리', '그린팜', '야채왕', '야채이야기', '쉐프의정원'],
+    )
+    assert not errors
+    assert entries[0]['item_name'] == '로케트'
+    assert entries[0]['mall_label'] == '그린팜'
+    assert entries[0]['price'] == 55000
+    assert entries[1]['mall_label'] == '야채왕'
+    assert entries[1]['price'] == 55000
+    assert entries[2]['item_name'] == '와일드'
+    assert entries[2]['price'] == 20000
 
 
 def test_bulk_save_ignores_our_price_and_keeps_unmentioned_price():
@@ -50,7 +69,7 @@ def test_bulk_save_ignores_our_price_and_keeps_unmentioned_price():
 
         result = save_manual_competitor_prices_from_text(
             session,
-            '*로케트\n우리 - 40,000\n그린팜 - 57,000\n야채왕 - 53,000\n',
+            '로케트\n우리 - 40,000\n그린팜 57,000\n야채왕 - 53,000\n',
         )
         assert result['ignored_own'] == 1
         saved = {
@@ -75,7 +94,7 @@ def test_explicit_blank_deletes_only_that_price():
         ])
         session.commit()
 
-        result = save_manual_competitor_prices_from_text(session, '*바질\n그린팜 -\n')
+        result = save_manual_competitor_prices_from_text(session, '바질\n그린팜 -\n')
         assert result['deleted'] == 1
         rows = session.query(ManualCompetitorPrice).all()
         assert len(rows) == 1
