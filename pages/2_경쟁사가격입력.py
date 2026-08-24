@@ -8,7 +8,7 @@ from core.repository import get_manual_competitor_price_df, save_manual_competit
 initialize_app()
 ensure_login()
 st.title('경쟁사 가격 입력')
-st.caption('경쟁사 가격을 한 번에 붙여넣어 저장합니다. 저장한 가격은 다음 Cron 실행에서도 그대로 유지됩니다.')
+st.caption('경쟁사 가격을 한 번에 붙여넣어 저장합니다. 단축 입력: 15→15,000원 / 135→13,500원 / 7500→7,500원. 쉼표 입력은 그대로 사용합니다.')
 
 bulk_text = st.text_area(
     '경쟁사 가격 일괄 입력',

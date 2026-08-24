@@ -282,15 +282,46 @@ def _normalize_label(text: str) -> str:
 
 
 def _parse_price_value(raw: str) -> int | None:
+    """경쟁사 가격 입력값을 원 단위 정수로 변환합니다.
+
+    단축 입력 규칙(쉼표가 없는 숫자에만 적용):
+    - 1~2자리: 천원 단위로 해석 (예: 7 -> 7,000 / 15 -> 15,000)
+    - 3자리: 백원 단위로 해석 (예: 135 -> 13,500)
+    - 4자리 이상: 입력한 원 단위 그대로 사용 (예: 7500 -> 7,500)
+
+    쉼표를 넣어 정확한 금액을 입력한 경우에는 후처리하지 않습니다.
+    예: 7,500 -> 7,500 / 13,500 -> 13,500
+    """
     text = str(raw or '').strip()
     if not text:
         return None
-    text = text.replace(',', '').replace('원', '').replace('₩', '').strip()
-    if not re.fullmatch(r'\d+(?:\.0+)?', text):
-        raise ValueError(f'가격 형식이 올바르지 않습니다: {raw}')
-    value = int(float(text))
+
+    text = text.replace('원', '').replace('₩', '').strip()
+    has_comma = ',' in text
+
+    if has_comma:
+        # 쉼표 입력은 정확한 원 단위 금액으로 취급합니다.
+        # 잘못된 쉼표 위치(예: 13,50)는 조용히 다른 금액으로 바꾸지 않고 오류로 처리합니다.
+        if not re.fullmatch(r'\d{1,3}(?:,\d{3})+(?:\.0+)?', text):
+            raise ValueError(f'가격 형식이 올바르지 않습니다: {raw}')
+        numeric_text = text.replace(',', '')
+    else:
+        numeric_text = text
+        if not re.fullmatch(r'\d+(?:\.0+)?', numeric_text):
+            raise ValueError(f'가격 형식이 올바르지 않습니다: {raw}')
+
+    value = int(float(numeric_text))
     if value < 0:
         raise ValueError(f'가격은 0 이상이어야 합니다: {raw}')
+
+    if has_comma:
+        return value
+
+    digit_count = len(str(value))
+    if digit_count <= 2:
+        return value * 1000
+    if digit_count == 3:
+        return value * 100
     return value
 
 

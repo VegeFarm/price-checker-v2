@@ -59,6 +59,36 @@ def test_parser_supports_no_star_and_no_dash():
     assert entries[2]['price'] == 20000
 
 
+def test_parser_supports_abbreviated_competitor_prices():
+    entries, errors = parse_competitor_price_text(
+        '*바질\n그린팜 - 7\n야채왕 - 15\n야채이야기 - 135\n쉐프의정원 - 7500\n',
+        known_item_names=['바질'],
+        known_mall_labels=['우리', '그린팜', '야채왕', '야채이야기', '쉐프의정원'],
+    )
+    assert not errors
+    assert [entry['price'] for entry in entries] == [7000, 15000, 13500, 7500]
+
+
+def test_parser_keeps_exact_prices_with_commas_or_full_digits():
+    entries, errors = parse_competitor_price_text(
+        '*바질\n그린팜 - 7,500\n야채왕 - 13,500\n야채이야기 - 13,550\n쉐프의정원 - 13500\n',
+        known_item_names=['바질'],
+        known_mall_labels=['우리', '그린팜', '야채왕', '야채이야기', '쉐프의정원'],
+    )
+    assert not errors
+    assert [entry['price'] for entry in entries] == [7500, 13500, 13550, 13500]
+
+
+def test_parser_rejects_malformed_comma_price_instead_of_guessing():
+    entries, errors = parse_competitor_price_text(
+        '*바질\n그린팜 - 13,50\n',
+        known_item_names=['바질'],
+        known_mall_labels=['우리', '그린팜'],
+    )
+    assert entries == []
+    assert errors
+
+
 def test_bulk_save_ignores_our_price_and_keeps_unmentioned_price():
     session = make_session()
     try:
