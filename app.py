@@ -77,7 +77,12 @@ try:
         _, missing_price_items = build_run_side_summary(latest_run)
         left, right = st.columns([2.2, 1])
         with left:
-            st.text_area('결과 복사', value=latest_run.message_text, height=420)
+            st.text_area(
+                '결과 복사',
+                value=latest_run.message_text,
+                height=360,
+                placeholder='실행 결과가 여기에 표시됩니다.',
+            )
         with right:
             render_missing_price_summary(missing_price_items)
 finally:

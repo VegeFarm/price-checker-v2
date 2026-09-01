@@ -3,6 +3,7 @@ from sqlalchemy.orm import sessionmaker
 
 from core.models import Base, Item, Mall, ManualCompetitorPrice, SearchKeywordRule, TargetProductIdRule
 from core.repository import (
+    get_manual_competitor_price_text,
     get_own_product_settings_df,
     parse_competitor_price_text,
     save_manual_competitor_prices_from_text,
@@ -130,6 +131,50 @@ def test_explicit_blank_deletes_only_that_price():
         assert len(rows) == 1
         assert rows[0].mall_id == malls['야채왕'].id
         assert rows[0].price == 50000
+    finally:
+        session.close()
+
+
+def test_current_competitor_price_text_contains_every_item_and_mall():
+    session = make_session()
+    try:
+        malls = {m.mall_display_name: m for m in session.query(Mall).all()}
+        rocket = session.query(Item).filter_by(display_name='로케트').one()
+        session.add_all([
+            ManualCompetitorPrice(item_id=rocket.id, mall_id=malls['그린팜'].id, price=55000),
+            ManualCompetitorPrice(item_id=rocket.id, mall_id=malls['야채왕'].id, price=13500),
+        ])
+        session.commit()
+
+        text = get_manual_competitor_price_text(session)
+
+        assert text.startswith('로케트\n그린팜 - 55,000\n야채왕 - 13,500')
+        assert '야채이야기 -\n쉐프의정원 -' in text
+        assert '\n\n바질\n그린팜 -\n야채왕 -' in text
+        assert '\n\n와일드\n그린팜 -\n야채왕 -' in text
+        assert '\n우리 -' not in text
+    finally:
+        session.close()
+
+
+def test_saving_full_current_text_does_not_rewrite_unchanged_prices():
+    session = make_session()
+    try:
+        malls = {m.mall_display_name: m for m in session.query(Mall).all()}
+        rocket = session.query(Item).filter_by(display_name='로케트').one()
+        session.add(ManualCompetitorPrice(
+            item_id=rocket.id,
+            mall_id=malls['그린팜'].id,
+            price=55000,
+        ))
+        session.commit()
+
+        text = get_manual_competitor_price_text(session)
+        result = save_manual_competitor_prices_from_text(session, text)
+
+        assert result['saved'] == 0
+        assert result['unchanged'] == 1
+        assert result['deleted'] == 0
     finally:
         session.close()
 

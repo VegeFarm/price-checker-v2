@@ -455,6 +455,7 @@ def save_manual_competitor_prices_from_text(session: Session, text: str) -> dict
     unknown_malls: set[str] = set()
     ignored_own = 0
     saved = 0
+    unchanged = 0
     deleted_count = 0
 
     for entry in entries:
@@ -490,15 +491,20 @@ def save_manual_competitor_prices_from_text(session: Session, text: str) -> dict
             )
             session.add(row)
             existing[key] = row
+            saved += 1
         else:
-            row.price = price
-            row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        saved += 1
+            if int(row.price) == int(price):
+                unchanged += 1
+            else:
+                row.price = price
+                row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                saved += 1
 
     session.commit()
     refreshed_run_id = refresh_latest_run_with_manual_prices(session)
     return {
         'saved': saved,
+        'unchanged': unchanged,
         'deleted': deleted_count,
         'ignored_own': ignored_own,
         'parse_errors': parse_errors,
@@ -525,6 +531,31 @@ def get_manual_competitor_price_df(session: Session) -> pd.DataFrame:
             row[mall.mall_display_name] = '' if value is None else f'{value:,}'
         rows.append(row)
     return pd.DataFrame(rows, columns=['상품명', *[m.mall_display_name for m in malls]])
+
+
+def get_manual_competitor_price_text(session: Session) -> str:
+    """현재 저장값을 경쟁사 가격 일괄 편집 형식으로 반환합니다.
+
+    등록된 모든 상품과 경쟁사 쇼핑몰을 정렬순서대로 표시하며, 아직 가격이 없는
+    조합도 ``쇼핑몰 -`` 형태로 포함합니다. 따라서 이 문자열을 편집창의 기본값으로
+    사용하면 한 화면에서 최신 가격 전체를 조회하고 바로 수정할 수 있습니다.
+    """
+    items = get_items(session)
+    malls = [m for m in get_malls(session) if m.mall_name != OWN_MALL_NAME]
+    prices = {
+        (row.item_id, row.mall_id): int(row.price)
+        for row in session.scalars(select(ManualCompetitorPrice)).all()
+    }
+
+    blocks: list[str] = []
+    for item in items:
+        lines = [item.display_name]
+        for mall in malls:
+            price = prices.get((item.id, mall.id))
+            price_text = '' if price is None else f'{price:,}'
+            lines.append(f'{mall.mall_display_name} - {price_text}'.rstrip())
+        blocks.append('\n'.join(lines))
+    return '\n\n'.join(blocks)
 
 
 def load_manual_competitor_prices(session: Session) -> dict[tuple[str, str], int]:

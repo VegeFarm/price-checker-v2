@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+    }
+
+    textarea {
+      display: block;
+      width: 100%;
+      min-height: 500px;
+      resize: vertical;
+      padding: 14px 16px;
+      border: 1px solid rgba(49, 51, 63, 0.28);
+      border-radius: 8px;
+      background: #ffffff;
+      color: #31333f;
+      font: 15px/1.62 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+        "Liberation Mono", "Noto Sans Mono CJK KR", monospace;
+      tab-size: 2;
+      outline: none;
+      white-space: pre;
+      overflow-wrap: normal;
+      overflow-x: auto;
+    }
+
+    textarea:focus {
+      border-color: #ff4b4b;
+      box-shadow: 0 0 0 1px #ff4b4b;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    button {
+      min-height: 42px;
+      padding: 8px 18px;
+      border: 1px solid #ff4b4b;
+      border-radius: 8px;
+      background: #ff4b4b;
+      color: #ffffff;
+      font: 700 15px/1.2 "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      cursor: pointer;
+    }
+
+    button:hover { background: #ff3333; }
+    button:active { transform: translateY(1px); }
+
+    .status {
+      color: #6b7280;
+      font-size: 13px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      textarea {
+        border-color: rgba(250, 250, 250, 0.22);
+        background: #0e1117;
+        color: #fafafa;
+      }
+      .status { color: #a3a8b3; }
+    }
+  </style>
+</head>
+<body>
+  <textarea id="editor" spellcheck="false" aria-label="경쟁사 가격 일괄 입력"></textarea>
+  <div class="actions">
+    <button id="save" type="button">경쟁사 가격 저장</button>
+    <span class="status" id="status">가격 숫자를 클릭하면 바로 새 숫자로 교체할 수 있습니다.</span>
+  </div>
+
+  <script>
+    const editor = document.getElementById('editor');
+    const saveButton = document.getElementById('save');
+    const status = document.getElementById('status');
+    let activeRevision = null;
+    let editorHeight = 820;
+
+    function send(type, data = {}) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type,
+        ...data,
+      }, '*');
+    }
+
+    function setFrameHeight() {
+      send('streamlit:setFrameHeight', {height: editorHeight + 66});
+    }
+
+    function setComponentValue(value) {
+      send('streamlit:setComponentValue', {value, dataType: 'json'});
+    }
+
+    function selectClickedPrice() {
+      if (editor.selectionStart !== editor.selectionEnd) return;
+
+      const cursor = editor.selectionStart;
+      const text = editor.value;
+      const lineStart = text.lastIndexOf('\n', Math.max(0, cursor - 1)) + 1;
+      const nextBreak = text.indexOf('\n', cursor);
+      const lineEnd = nextBreak === -1 ? text.length : nextBreak;
+      const line = text.slice(lineStart, lineEnd);
+      const match = line.match(/^\s*.+?\s*-\s*([0-9][0-9,]*)\s*(?:원)?\s*$/);
+      if (!match) return;
+
+      const number = match[1];
+      const numberOffset = line.lastIndexOf(number);
+      const numberStart = lineStart + numberOffset;
+      const numberEnd = numberStart + number.length;
+
+      if (cursor >= numberStart && cursor <= numberEnd) {
+        editor.setSelectionRange(numberStart, numberEnd);
+      }
+    }
+
+    editor.addEventListener('mouseup', () => {
+      window.setTimeout(selectClickedPrice, 0);
+    });
+
+    editor.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        saveButton.click();
+      }
+    });
+
+    saveButton.addEventListener('click', () => {
+      const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      status.textContent = '저장 요청을 처리하는 중입니다...';
+      setComponentValue({text: editor.value, save_token: token});
+    });
+
+    window.addEventListener('message', (event) => {
+      const message = event.data;
+      if (!message || message.type !== 'streamlit:render') return;
+
+      const args = message.args || {};
+      const incomingRevision = Number(args.revision || 0);
+      editorHeight = Math.max(500, Number(args.height || 820));
+      editor.style.height = `${editorHeight}px`;
+
+      if (activeRevision !== incomingRevision) {
+        editor.value = String(args.value || '');
+        activeRevision = incomingRevision;
+        status.textContent = '가격 숫자를 클릭하면 바로 새 숫자로 교체할 수 있습니다.';
+      }
+      setFrameHeight();
+    });
+
+    send('streamlit:componentReady', {apiVersion: 1});
+    setFrameHeight();
+  </script>
+</body>
+</html>
