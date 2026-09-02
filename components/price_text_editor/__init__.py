@@ -14,7 +14,7 @@ def price_text_editor(
     value: str,
     *,
     height: int = 820,
-    revision: int = 0,
+    revision: str = '0',
     key: str | None = None,
 ) -> dict | None:
     """최신 경쟁사 가격을 편집하고 저장 요청을 반환하는 메모장형 편집기."""

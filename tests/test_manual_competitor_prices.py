@@ -3,6 +3,7 @@ from sqlalchemy.orm import sessionmaker
 
 from core.models import Base, Item, Mall, ManualCompetitorPrice, SearchKeywordRule, TargetProductIdRule
 from core.repository import (
+    get_competitor_price_editor_text,
     get_manual_competitor_price_text,
     get_own_product_settings_df,
     parse_competitor_price_text,
@@ -175,6 +176,33 @@ def test_saving_full_current_text_does_not_rewrite_unchanged_prices():
         assert result['saved'] == 0
         assert result['unchanged'] == 1
         assert result['deleted'] == 0
+    finally:
+        session.close()
+
+
+def test_competitor_editor_uses_latest_app_result_text():
+    from datetime import datetime
+    from core.models import RunHistory
+
+    session = make_session()
+    try:
+        expected = '*로케트\n우리 - 40,000\n그린팜 - 55,000\n야채왕 - 53,000'
+        run = RunHistory(
+            trigger_type='manual',
+            status='success',
+            started_at=datetime.now(),
+            finished_at=datetime.now(),
+            message_text=expected,
+            error_text='',
+        )
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+
+        text, revision = get_competitor_price_editor_text(session)
+
+        assert text == expected
+        assert revision == f'run-{run.id}'
     finally:
         session.close()
 

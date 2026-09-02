@@ -4,13 +4,13 @@ from components.price_text_editor import price_text_editor
 from core.auth import ensure_login
 from core.bootstrap import initialize_app
 from core.db import get_session
-from core.repository import get_manual_competitor_price_text, save_manual_competitor_prices_from_text
+from core.repository import get_competitor_price_editor_text, save_manual_competitor_prices_from_text
 
 initialize_app()
 ensure_login()
 st.title('경쟁사 가격 입력')
 st.caption(
-    '현재 저장된 최신 경쟁사 가격 전체를 한 번에 확인하고 수정합니다. '
+    'app의 지금 실행으로 만들어진 최신 결과를 그대로 불러와 한 번에 확인하고 수정합니다. '
     '가격 숫자를 클릭한 뒤 바로 새 숫자를 입력하면 기존 숫자가 교체됩니다. '
     '단축 입력: 15→15,000원 / 135→13,500원 / 7500→7,500원.'
 )
@@ -22,8 +22,9 @@ try:
         level, message = flash
         getattr(st, level)(message)
 
-    revision = int(st.session_state.get('competitor_editor_revision', 0))
-    current_text = get_manual_competitor_price_text(session)
+    editor_revision = int(st.session_state.get('competitor_editor_revision', 0))
+    current_text, source_revision = get_competitor_price_editor_text(session)
+    revision = f'{source_revision}-{editor_revision}'
 
     st.subheader('경쟁사 가격 일괄 입력')
     request = price_text_editor(
@@ -71,7 +72,7 @@ try:
                 )
             else:
                 st.session_state['competitor_price_flash'] = ('success', success_message)
-                st.session_state['competitor_editor_revision'] = revision + 1
+                st.session_state['competitor_editor_revision'] = editor_revision + 1
 
         st.rerun()
 finally:

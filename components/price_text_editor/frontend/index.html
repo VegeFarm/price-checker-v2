@@ -27,8 +27,11 @@
       border-radius: 8px;
       background: #ffffff;
       color: #31333f;
-      font: 15px/1.62 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-        "Liberation Mono", "Noto Sans Mono CJK KR", monospace;
+      font-family: "Source Sans 3", "Source Sans Pro", "Pretendard",
+        "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      font-size: 1rem;
+      font-weight: 400;
+      line-height: 1.6;
       tab-size: 2;
       outline: none;
       white-space: pre;
@@ -151,9 +154,12 @@
       if (!message || message.type !== 'streamlit:render') return;
 
       const args = message.args || {};
-      const incomingRevision = Number(args.revision || 0);
+      const incomingRevision = String(args.revision || '0');
       editorHeight = Math.max(500, Number(args.height || 820));
       editor.style.height = `${editorHeight}px`;
+      if (message.theme && message.theme.font) {
+        editor.style.fontFamily = message.theme.font;
+      }
 
       if (activeRevision !== incomingRevision) {
         editor.value = String(args.value || '');

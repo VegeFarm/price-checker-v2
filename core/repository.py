@@ -558,6 +558,18 @@ def get_manual_competitor_price_text(session: Session) -> str:
     return '\n\n'.join(blocks)
 
 
+def get_competitor_price_editor_text(session: Session) -> tuple[str, str]:
+    """경쟁사 편집창에 표시할 최신 결과와 캐시 갱신용 버전을 반환합니다.
+
+    app에서 성공한 실행 결과가 있으면 app의 ``결과 복사`` 내용을 그대로 사용합니다.
+    아직 실행 결과가 없을 때만 수동 경쟁사 가격 DB를 전체 편집 형식으로 만듭니다.
+    """
+    latest_run = get_latest_run(session)
+    if latest_run is not None and str(latest_run.message_text or '').strip():
+        return latest_run.message_text, f'run-{latest_run.id}'
+    return get_manual_competitor_price_text(session), 'manual'
+
+
 def load_manual_competitor_prices(session: Session) -> dict[tuple[str, str], int]:
     item_names = {i.id: i.display_name for i in get_items(session, enabled_only=True)}
     mall_names = {m.id: m.mall_name for m in get_malls(session, enabled_only=True)}
